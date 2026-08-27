@@ -86,14 +86,15 @@ git push   # le repo doit être sur GitHub
 
 1. Sur [render.com](https://render.com/) : **New** → **Blueprint** → sélectionne ce repo (`render.yaml` est déjà présent).
 2. Une fois le service créé, renseigne `OPENROUTER_API_KEY` dans l'onglet **Environment** (volontairement absente du repo — voir `sync: false` dans `render.yaml`).
-3. Le premier déploiement construit l'image Docker (`ffmpeg` + police + modèle faster-whisper `base` pré-téléchargés dans l'image, voir `Dockerfile`) — plusieurs minutes.
+3. Le premier déploiement construit l'image Docker (`ffmpeg` + police + modèle faster-whisper `tiny` pré-téléchargés dans l'image, voir `Dockerfile`) — plusieurs minutes.
 
 Limites réelles assumées du plan gratuit (voir aussi `webapp.py`) :
 
 - **CPU/RAM limités** (0.1 CPU, 512 Mo) : whisper + ffmpeg y sont nettement plus lents qu'en local — une vidéo de 60s peut prendre 15-20 minutes au lieu de 3-4.
+- **OOM constaté en conditions réelles** : le modèle `base` (~150 Mo) suffisait à faire planter (502, job perdu) le conteneur pendant la transcription elle-même, même avec le modèle libéré explicitement avant le montage (`steps/subtitles.unload_model()`, appelé par `webapp.py`) et le Ken Burns réglé sur un agrandissement ×1 (`STORYGEN_MONTAGE_UPSCALE=1`). Le déploiement utilise donc `tiny` (~75 Mo) — transcription nettement moins précise, mais le seul réglage qui tient dans 512 Mo à ce jour.
 - **Mise en veille après 15 min d'inactivité**, réveil ~30-60s au prochain visiteur. La page interroge `/status` toutes les 4s pendant une génération, ce qui maintient le service actif tant qu'un onglet reste ouvert.
-- **Disque éphémère** : les jobs (en mémoire) et les vidéos déjà générées sont perdus au redémarrage du service (déploiement, ou veille prolongée) — télécharge le MP4 dès qu'il est prêt. Un vrai usage multi-utilisateurs voudrait une file de jobs (Redis/RQ) et un stockage objet persistant (S3/R2) à la place.
-- `STORYGEN_WHISPER_MODEL=base` par défaut en déploiement (au lieu de `small` en local) : plus sûr en mémoire, transcription un peu moins précise.
+- **Disque éphémère** : les jobs (en mémoire) et les vidéos déjà générées sont perdus au redémarrage du service (déploiement, ou crash) — télécharge le MP4 dès qu'il est prêt. Un vrai usage multi-utilisateurs voudrait une file de jobs (Redis/RQ) et un stockage objet persistant (S3/R2) à la place.
+- Si les plantages persistent même avec `tiny`, l'étape suivante réaliste est de passer sur un plan payant (plus de RAM) plutôt que de continuer à dégrader la qualité — 512 Mo est une contrainte dure pour whisper + ffmpeg + Python ensemble.
 
 Tester l'image Docker en local avant de déployer :
 

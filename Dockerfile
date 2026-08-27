@@ -26,10 +26,13 @@ RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
-# "base" (~150 Mo) plutôt que "small" (~500 Mo, défaut local) : plus sûr
-# sur les 512 Mo de RAM d'un plan gratuit une fois ffmpeg lancé en
-# parallèle. Surchargeable au déploiement via --build-arg si besoin.
-ARG STORYGEN_WHISPER_MODEL=base
+# "tiny" (~75 Mo) plutôt que "small" (~500 Mo, défaut local) : constaté en
+# conditions réelles sur Render free (512 Mo) — "base" (~150 Mo) suffisait
+# encore à faire planter (OOM) le conteneur pendant la transcription elle-
+# même, même après libération explicite du modèle avant le montage (voir
+# steps/subtitles.unload_model()). "tiny" transcrit moins bien mais tient
+# dans la mémoire disponible. Surchargeable au déploiement via --build-arg.
+ARG STORYGEN_WHISPER_MODEL=tiny
 ENV STORYGEN_WHISPER_MODEL=${STORYGEN_WHISPER_MODEL}
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${STORYGEN_WHISPER_MODEL}', device='cpu', compute_type='int8')"
 

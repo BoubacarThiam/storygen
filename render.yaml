@@ -18,7 +18,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: STORYGEN_WHISPER_MODEL
-        value: base
+        value: tiny
       - key: STORYGEN_MONTAGE_UPSCALE
         value: "1"
       - key: PYTHONUNBUFFERED
