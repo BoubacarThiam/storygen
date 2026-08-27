@@ -41,8 +41,10 @@ ZOOM_MAX = 1.15  # zoom-in subtil et constant sur toute la durée du clip
 # Pré-agrandissement avant zoompan : les images reçues (voir constat plus
 # haut) sont plus petites que la résolution de sortie visée, et zoompan sur
 # une image de petite taille tremble visiblement (quantification interne au
-# pixel) — un facteur 2 avant le zoom/pan lisse largement ce défaut.
-UPSCALE_FACTOR = 2
+# pixel) — un facteur 2 avant le zoom/pan lisse largement ce défaut, au prix
+# de plus de RAM/CPU pour ffmpeg (surchargeable via STORYGEN_MONTAGE_UPSCALE,
+# voir config.py — un OOM a été constaté sur Render free avec facteur 2).
+UPSCALE_FACTOR = config.MONTAGE_UPSCALE_FACTOR
 MIN_VIDEO_SIZE = 10_000
 
 

@@ -19,5 +19,7 @@ services:
         sync: false
       - key: STORYGEN_WHISPER_MODEL
         value: base
+      - key: STORYGEN_MONTAGE_UPSCALE
+        value: "1"
       - key: PYTHONUNBUFFERED
         value: "1"

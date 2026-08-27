@@ -17,6 +17,7 @@ Appelable seul :
 from __future__ import annotations
 
 import argparse
+import gc
 import logging
 from pathlib import Path
 
@@ -36,6 +37,20 @@ MIN_SRT_SIZE = 10
 # depuis Hugging Face au premier lancement) prend plusieurs secondes à
 # initialiser, ce serait gâché si on le rechargeait par scène.
 _model: WhisperModel | None = None
+
+
+def unload_model() -> None:
+    """Libère le modèle chargé en mémoire. Sans effet s'il n'a jamais été
+    chargé. Constat réel (hébergement à 512 Mo, ex. Render free) : le
+    modèle whisper reste sinon en mémoire pendant que ffmpeg démarre pour
+    le montage juste après — assez pour déclencher un OOM. webapp.py
+    appelle cette fonction entre les deux étapes ; la CLI locale (RAM non
+    contrainte) n'en a pas besoin et ne l'appelle pas."""
+    global _model
+    if _model is not None:
+        del _model
+        _model = None
+        gc.collect()
 
 
 def _get_model() -> WhisperModel:

@@ -34,7 +34,7 @@ from storygen import config
 from storygen.steps.images import FORMAT_DIMENSIONS, generate_images
 from storygen.steps.montage import generate_montage
 from storygen.steps.script import generate_story
-from storygen.steps.subtitles import generate_subtitles
+from storygen.steps.subtitles import generate_subtitles, unload_model as unload_whisper_model
 from storygen.steps.voice import generate_voices
 
 logger = logging.getLogger("storygen.webapp")
@@ -96,6 +96,11 @@ def _run_job(job: Job) -> None:
 
         job.status = "subtitles"
         srt_path = generate_subtitles(story, story_dir, durations)
+        # Libère le modèle whisper avant ffmpeg — sur un hébergement à RAM
+        # limitée (ex. Render free, 512 Mo), le garder chargé pendant le
+        # montage suffit à déclencher un OOM (constaté en conditions
+        # réelles). Voir steps/subtitles.unload_model().
+        unload_whisper_model()
 
         job.status = "montage"
         final_path = generate_montage(story, story_dir, durations, srt_path, fmt=job.fmt)

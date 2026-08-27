@@ -24,6 +24,13 @@ DEFAULT_FORMAT = "9:16"
 # sont alors plus sûrs, au prix d'une transcription un peu moins précise.
 WHISPER_MODEL_SIZE = os.environ.get("STORYGEN_WHISPER_MODEL", "small")
 
+# Facteur de pré-agrandissement avant le Ken Burns (steps/montage.py) :
+# plus il est élevé, plus le zoom/pan est fluide, mais plus ffmpeg consomme
+# de RAM/CPU pendant l'encodage. 2 par défaut ; 1 sur un hébergement à RAM
+# limitée (constaté : un OOM sur Render free avec whisper encore en
+# mémoire + facteur 2 — voir aussi steps/subtitles.unload_model()).
+MONTAGE_UPSCALE_FACTOR = int(os.environ.get("STORYGEN_MONTAGE_UPSCALE", "2"))
+
 # Choix validé avec l'utilisateur : police système déjà présente, zéro
 # fichier binaire supplémentaire à versionner.
 SUBTITLE_FONT = "DejaVu Sans"
