@@ -14,3 +14,6 @@ output/
 *.mp3
 *.mp4
 *.png
+
+# Config Claude Code locale (personnelle, pas partagée)
+.claude/settings.local.json

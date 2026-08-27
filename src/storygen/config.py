@@ -18,7 +18,11 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 DEFAULT_VOICE = "fr-FR-RemyMultilingualNeural"
 DEFAULT_DURATION_S = 90
 DEFAULT_FORMAT = "9:16"
-WHISPER_MODEL_SIZE = "small"
+# Surchargeable via STORYGEN_WHISPER_MODEL : sur un hébergement gratuit à RAM
+# limitée (ex. Render free, 512 Mo), "small" (~500 Mo) peut saturer la
+# mémoire une fois ffmpeg lancé en parallèle — "base" (~150 Mo) ou "tiny"
+# sont alors plus sûrs, au prix d'une transcription un peu moins précise.
+WHISPER_MODEL_SIZE = os.environ.get("STORYGEN_WHISPER_MODEL", "small")
 
 # Choix validé avec l'utilisateur : police système déjà présente, zéro
 # fichier binaire supplémentaire à versionner.

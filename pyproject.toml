@@ -9,8 +9,11 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "edge-tts>=7.2.8",
+    "fastapi>=0.141.1",
     "faster-whisper>=1.2.1",
     "pydantic>=2.13.4",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.52.4",
 ]
 
 [project.scripts]
@@ -19,3 +22,8 @@ storygen = "storygen.cli:main"
 [build-system]
 requires = ["uv_build>=0.12.6,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]

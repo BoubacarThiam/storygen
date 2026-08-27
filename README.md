@@ -12,7 +12,8 @@ Aucun service payant : [OpenRouter](https://openrouter.ai/) (modèles `:free`),
 
 - ✅ **Phase 1 — Scénarisation** : prompt → `story.json` structuré et validé.
 - ✅ **Phase 2 — Images (Pollinations) + Voix (edge-tts)**
-- ⏳ Phase 3 — Sous-titres (faster-whisper) + Montage (ffmpeg) → premier MP4
+- ✅ **Phase 3 — Sous-titres (faster-whisper) + Montage (ffmpeg) → premier MP4**
+- ✅ **Interface web** : formulaire en ligne (`webapp.py`) + déploiement Docker/Render (voir plus bas).
 - ⏳ Phase 4 — Robustesse (reprise après échec, `--dry-run`, logs)
 
 ### Constats réels notables (voir aussi les commits)
@@ -21,6 +22,10 @@ Aucun service payant : [OpenRouter](https://openrouter.ai/) (modèles `:free`),
 - **Pollinations (Cloudflare) renvoie 403 sur le User-Agent par défaut d'urllib** (`Python-urllib/3.x`) mais laisse passer une requête identifiée. `utils/http.py` envoie donc systématiquement `User-Agent: StoryGen/0.1 (...)`.
 - Certains modèles OpenRouter `:free` haut de gamme (ex. `thinkingmachines/inkling*:free`) renvoient 403 hors "agentic harness" — géré par le repli en cascade.
 - Un modèle `:free` a sous-respecté `--duration` (53s au lieu de 90s) jusqu'à ce que le prompt système impose un nombre de scènes suggéré + une tolérance explicite.
+- **Pollinations ignore aussi la résolution demandée** (`width`/`height` dans l'URL) et plafonne systématiquement à 1024 px sur le plus grand côté (ex. `576x1024` reçu pour une demande 9:16), mais respecte le ratio. `steps/montage.py` ré-agrandit donc chaque image avant le Ken Burns plutôt que de compter sur la résolution demandée.
+- **`zoompan` tremble visiblement sur une image de petite taille** (quantification interne au pixel) : un pré-agrandissement ×2 avant le zoom/pan (filtre `scale`, lanczos) lisse largement l'effet.
+- **Le modèle faster-whisper `small` (~500 Mo) se télécharge depuis Hugging Face au premier lancement** (aucune clé requise, mais peut prendre plusieurs minutes selon la connexion) — normal une seule fois, mis en cache ensuite dans `~/.cache/huggingface`.
+- Limite connue (candidate Phase 4) : un segment whisper correspondant à une phrase longue peut se retrouver découpé en 4-5 lignes de sous-titres affichées en même temps — lisible, mais pas idéal visuellement. Un vrai découpage par groupes de mots avec timing (`word_timestamps=True`) donnerait un rendu plus proche des standards (2 lignes max, incrustées progressivement).
 
 ## Installation
 
@@ -41,16 +46,16 @@ paiement possible par erreur. StoryGen découvre automatiquement la liste des
 modèles `:free` disponibles au runtime et bascule sur le suivant en cas
 d'indisponibilité.
 
-## Utilisation (Phases 1+2, pour l'instant)
+## Utilisation
 
 ```bash
 uv run storygen "un pêcheur de Saint-Louis trouve une bouteille à la mer" --duration 90 --format 9:16
 ```
 
-Produit `work/{slug}/story.json`, `work/{slug}/assets/img/scene_XX.jpg` et
-`work/{slug}/assets/audio/scene_XX.mp3`. Relancer la même commande réutilise
-le cache (pas de nouvel appel réseau) sauf avec `--force`. Le montage final
-(Phase 3) n'est pas encore branché.
+Produit `work/{slug}/story.json`, `work/{slug}/assets/img/scene_XX.jpg`,
+`work/{slug}/assets/audio/scene_XX.mp3`, `work/{slug}/assets/subtitles.srt`
+et la vidéo finale `output/{slug}.mp4`. Relancer la même commande réutilise
+le cache (pas de nouvel appel réseau ni réencodage) sauf avec `--force`.
 
 Chaque module est aussi appelable seul :
 
@@ -58,6 +63,43 @@ Chaque module est aussi appelable seul :
 uv run python -m storygen.steps.script "un pêcheur..." --duration 90
 uv run python -m storygen.steps.images work/{slug}/story.json --format 9:16
 uv run python -m storygen.steps.voice work/{slug}/story.json --voice fr-FR-RemyMultilingualNeural
+uv run python -m storygen.steps.subtitles work/{slug}/story.json
+uv run python -m storygen.steps.montage work/{slug}/story.json --format 9:16
+```
+
+## Interface web
+
+```bash
+uv run uvicorn storygen.webapp:app --reload
+# -> http://127.0.0.1:8000
+```
+
+Formulaire (prompt, durée, format, voix) → génération en tâche de fond →
+lien vers le MP4 une fois prêt. Compte 1 à 5 minutes par vidéo en local ;
+plus lent sur un hébergement gratuit à faible CPU (voir Déploiement).
+
+### Déploiement (Render, gratuit)
+
+```bash
+git push   # le repo doit être sur GitHub
+```
+
+1. Sur [render.com](https://render.com/) : **New** → **Blueprint** → sélectionne ce repo (`render.yaml` est déjà présent).
+2. Une fois le service créé, renseigne `OPENROUTER_API_KEY` dans l'onglet **Environment** (volontairement absente du repo — voir `sync: false` dans `render.yaml`).
+3. Le premier déploiement construit l'image Docker (`ffmpeg` + police + modèle faster-whisper `base` pré-téléchargés dans l'image, voir `Dockerfile`) — plusieurs minutes.
+
+Limites réelles assumées du plan gratuit (voir aussi `webapp.py`) :
+
+- **CPU/RAM limités** (0.1 CPU, 512 Mo) : whisper + ffmpeg y sont nettement plus lents qu'en local — une vidéo de 60s peut prendre 15-20 minutes au lieu de 3-4.
+- **Mise en veille après 15 min d'inactivité**, réveil ~30-60s au prochain visiteur. La page interroge `/status` toutes les 4s pendant une génération, ce qui maintient le service actif tant qu'un onglet reste ouvert.
+- **Disque éphémère** : les jobs (en mémoire) et les vidéos déjà générées sont perdus au redémarrage du service (déploiement, ou veille prolongée) — télécharge le MP4 dès qu'il est prêt. Un vrai usage multi-utilisateurs voudrait une file de jobs (Redis/RQ) et un stockage objet persistant (S3/R2) à la place.
+- `STORYGEN_WHISPER_MODEL=base` par défaut en déploiement (au lieu de `small` en local) : plus sûr en mémoire, transcription un peu moins précise.
+
+Tester l'image Docker en local avant de déployer :
+
+```bash
+docker build -t storygen .
+docker run -p 8000:8000 --env-file .env -e PORT=8000 storygen
 ```
 
 ## Tests
@@ -76,8 +118,20 @@ uv run python -m unittest discover -s tests -v
   l'endpoint (JPEG, User-Agent requis).
 - `tests/test_voice.py` — vraie synthèse edge-tts (aucune clé requise) et
   vérification du cache disque.
-- `tests/test_ffmpeg.py` — mesure réelle de durée via ffprobe sur un audio
-  généré par ffmpeg (aucun réseau).
+- `tests/test_ffmpeg.py` — mesure réelle de durée via ffprobe et exécution
+  réelle de `run_ffmpeg` (succès et échec), sur des fichiers générés par
+  ffmpeg (aucun réseau).
+- `tests/test_subtitles.py` — logique de formatage/découpage (aucun réseau)
+  **+** une vraie transcription faster-whisper d'un MP3 edge-tts réel
+  (télécharge le modèle `small` au premier lancement, voir plus haut).
+- `tests/test_montage.py` — vrai montage ffmpeg (Ken Burns + concat +
+  sous-titres incrustés) sur des assets de test générés localement (aucun
+  réseau), vérifie la durée finale et le cache.
+- `tests/test_webapp.py` — routage/validation réels (aucun réseau) sur le
+  serveur FastAPI ; l'orchestration des jobs remplace les 5 étapes du
+  pipeline (déjà couvertes par de vrais tests ci-dessus) par des doubles
+  rapides pour vérifier les transitions de statut sans attendre plusieurs
+  minutes à chaque run de la suite.
 
 Le test end-to-end complet de la génération (`generate_story`, appel de
 complétion réel) nécessite `OPENROUTER_API_KEY` dans `.env` — à lancer
@@ -93,20 +147,25 @@ uv run storygen "un pêcheur de Saint-Louis trouve une bouteille à la mer"
 storygen/
   src/storygen/
     cli.py            # point d'entrée (uv run storygen ...)
+    webapp.py          # interface web (uvicorn storygen.webapp:app)
     config.py         # .env, constantes
     models.py         # schémas Pydantic (contrat story.json)
+    templates/
+      index.html         # formulaire + polling JS de l'interface web
     steps/
       script.py        # Phase 1 : scénarisation
       images.py         # Phase 2 : images (Pollinations)
       voice.py            # Phase 2 : voix off (edge-tts)
-      subtitles.py          # Phase 3 (à venir)
-      render.py               # Phase 3 (à venir)
+      subtitles.py          # Phase 3a : sous-titres (faster-whisper)
+      montage.py               # Phase 3b : montage final (ffmpeg, Ken Burns)
     utils/
       cache.py          # slug, cache disque
       http.py            # client HTTP stdlib (GET/POST JSON, download+retry, User-Agent)
-      ffmpeg.py            # wrapper ffprobe (durée réelle des assets)
+      ffmpeg.py            # wrapper ffmpeg/ffprobe (durée réelle, exécution encodage)
   work/{slug}/         # assets intermédiaires d'une histoire (ignoré par git)
   output/              # MP4 finaux (ignoré par git)
+  Dockerfile           # image de déploiement (ffmpeg + police + modèle whisper pré-téléchargés)
+  render.yaml          # blueprint Render (plan gratuit)
   tests/
 ```
 

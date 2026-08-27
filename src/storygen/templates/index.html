@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StoryGen</title>
+<style>
+  :root {
+    --bg: #12201e;
+    --panel: #182823;
+    --ink: #f3e6c9;
+    --ink-dim: #a99b7e;
+    --accent: #e2703a;
+    --teal: #55a39c;
+    --line: rgba(243, 230, 201, 0.14);
+    --error: #e05353;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    display: flex;
+    justify-content: center;
+    padding: 2.5rem 1.25rem 4rem;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 { font-size: 1.6rem; margin: 0 0 0.3rem; }
+  .sub { color: var(--ink-dim); margin: 0 0 2rem; font-size: 0.95rem; }
+  form {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+  label { display: block; font-size: 0.85rem; color: var(--ink-dim); margin-bottom: 0.4rem; }
+  textarea, input, select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+  }
+  textarea { min-height: 4.5rem; resize: vertical; }
+  .row { display: flex; gap: 1rem; }
+  .row > div { flex: 1; }
+  button {
+    background: var(--accent);
+    color: #1a0f0a;
+    border: none;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #result { margin-top: 1.5rem; }
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: var(--ink-dim);
+    font-size: 0.9rem;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--teal);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+  video { width: 100%; border-radius: 12px; margin-top: 1rem; background: #000; }
+  .error { color: var(--error); }
+  a.dl { color: var(--accent); }
+  footer { margin-top: 2.5rem; color: var(--ink-dim); font-size: 0.78rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>StoryGen</h1>
+  <p class="sub">Prompt texte → vidéo narrative (script, images, voix, sous-titres, montage). Pipeline coût zéro — compte 1 à 5 minutes selon la durée demandée.</p>
+
+  <form id="form">
+    <div>
+      <label for="prompt">Sujet de l'histoire</label>
+      <textarea id="prompt" name="prompt" placeholder="un pêcheur de Saint-Louis trouve une bouteille à la mer" required></textarea>
+    </div>
+    <div class="row">
+      <div>
+        <label for="duration">Durée visée (s)</label>
+        <input type="number" id="duration" name="duration" value="60" min="15" max="180">
+      </div>
+      <div>
+        <label for="format">Format</label>
+        <select id="format" name="format">
+          __FORMAT_OPTIONS__
+        </select>
+      </div>
+    </div>
+    <div>
+      <label for="voice">Voix (edge-tts)</label>
+      <input type="text" id="voice" name="voice" value="__DEFAULT_VOICE__">
+    </div>
+    <button type="submit" id="submit-btn">Générer la vidéo</button>
+  </form>
+
+  <div id="result"></div>
+
+  <footer>
+    Aucun service payant : script (OpenRouter, modèles :free), images (Pollinations),
+    voix (edge-tts), sous-titres (faster-whisper local), montage (ffmpeg).
+  </footer>
+</main>
+
+<script>
+  const form = document.getElementById("form");
+  const submitBtn = document.getElementById("submit-btn");
+  const result = document.getElementById("result");
+  let pollTimer = null;
+
+  const STEP_ORDER = ["queued", "script", "images", "voice", "subtitles", "montage", "done"];
+
+  function renderStatus(data) {
+    if (data.status === "error") {
+      result.innerHTML = `<p class="error">Échec : ${escapeHtml(data.error || "erreur inconnue")}</p>`;
+      return;
+    }
+    if (data.status === "done" && data.video_url) {
+      result.innerHTML = `
+        <video controls playsinline src="${data.video_url}"></video>
+        <p><a class="dl" href="${data.video_url}" download>Télécharger le MP4</a></p>
+      `;
+      return;
+    }
+    const stepIndex = STEP_ORDER.indexOf(data.status);
+    result.innerHTML = `
+      <div class="status-line"><span class="dot"></span>
+        <span>${escapeHtml(data.label)} (étape ${Math.max(stepIndex, 0)}/6)</span>
+      </div>
+    `;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  async function poll(jobId) {
+    try {
+      const res = await fetch(`/status/${jobId}`);
+      const data = await res.json();
+      renderStatus(data);
+      if (data.status === "done" || data.status === "error") {
+        clearInterval(pollTimer);
+        submitBtn.disabled = false;
+      }
+    } catch (e) {
+      // panne réseau passagère : on retente au prochain tick, pas d'arrêt
+    }
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    result.innerHTML = `<div class="status-line"><span class="dot"></span><span>Envoi de la demande...</span></div>`;
+
+    const body = new URLSearchParams(new FormData(form));
+    const res = await fetch("/generate", { method: "POST", body });
+    const data = await res.json();
+
+    if (!res.ok) {
+      result.innerHTML = `<p class="error">${escapeHtml(data.error || "Requête refusée.")}</p>`;
+      submitBtn.disabled = false;
+      return;
+    }
+
+    poll(data.job_id);
+    pollTimer = setInterval(() => poll(data.job_id), 4000);
+  });
+</script>
+</body>
+</html>

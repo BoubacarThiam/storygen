@@ -1,0 +1,23 @@
+# Blueprint Render (https://render.com/docs/blueprint-spec) : déploie
+# l'interface web de StoryGen (src/storygen/webapp.py) sur le plan gratuit.
+#
+# Utilisation :
+#   1. Push ce repo sur GitHub (déjà fait).
+#   2. Sur render.com : New -> Blueprint -> sélectionne ce repo.
+#   3. Render lit ce fichier et crée le service ci-dessous.
+#   4. Renseigne OPENROUTER_API_KEY dans l'onglet Environment du service
+#      (valeur volontairement absente d'ici et du repo, voir "sync: false").
+services:
+  - type: web
+    name: storygen
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: STORYGEN_WHISPER_MODEL
+        value: base
+      - key: PYTHONUNBUFFERED
+        value: "1"

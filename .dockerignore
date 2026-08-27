@@ -1,0 +1,12 @@
+.venv
+work/
+output/
+.git
+.github
+.claude
+__pycache__
+*.py[oc]
+.env
+.env.example
+.pytest_cache
+tests/
