@@ -53,13 +53,20 @@ def discover_free_models(timeout: float = 15.0) -> list[str]:
     return ids
 
 
+
+# Débit réel mesuré en Phase 2 (steps/voice.py + ffprobe) sur la voix par
+# défaut fr-FR-RemyMultilingualNeural : ~160 mots / 55.6s sur un premier run.
+# duration_hint généré par le LLM s'est avéré peu fiable (le modèle ne sait
+# pas prédire un débit TTS réel) ; ce qui détermine vraiment la durée finale,
+# c'est le nombre de mots réellement écrits. On calibre donc sur les mots,
+# pas sur duration_hint.
+CALIBRATED_WORDS_PER_SECOND = 2.85
+
+
 def build_system_prompt(duration_s: int) -> str:
-    # Estimation grossière : ~20 mots/scène à un débit oral naturel (~2.8 mots/s)
-    # -> ~7s/scène. Donne au modèle un nombre de scènes concret à viser plutôt
-    # qu'une contrainte de durée abstraite qu'il a tendance à sous-estimer.
-    avg_scene_s = 7.0
-    suggested_scenes = max(3, round(duration_s / avg_scene_s))
-    tolerance_s = max(10, round(duration_s * 0.15))
+    target_words = round(duration_s * CALIBRATED_WORDS_PER_SECOND)
+    suggested_scenes = max(3, round(target_words / 20))  # 20 = milieu de la fourchette 15-25 mots/scène
+    word_tolerance = max(15, round(target_words * 0.15))
 
     return f"""Tu es un scénariste qui écrit des histoires courtes en français, \
 structurées en scènes, pour une vidéo narrée verticale (type YouTube Shorts / TikTok).
@@ -93,14 +100,27 @@ RÈGLES DE SORTIE — CRITIQUES :
 
 CONTRAINTES DE CONTENU :
 - Écris environ {suggested_scenes} scènes pour cette histoire (ni beaucoup moins, ni beaucoup plus).
-- IMPORTANT : la somme de tous les "duration_hint" DOIT être comprise entre \
-{duration_s - tolerance_s} et {duration_s + tolerance_s} secondes (cible : {duration_s}s). \
-Si tu as prévu moins de scènes que nécessaire pour l'atteindre, ajoutes-en plutôt que de \
-gonfler artificiellement la durée d'une scène.
+- CRITIQUE : chaque "narration" DOIT contenir ENTRE 15 ET 25 MOTS — compte-les \
+avant de répondre. Ne descends JAMAIS en dessous de 15 mots, même pour une scène \
+visuellement simple : ajoute un détail sensoriel, une pensée ou une précision \
+plutôt que d'écourter. C'est le nombre de mots réellement écrits, pas \
+"duration_hint", qui détermine la durée réelle de la vidéo.
+- Vise un TOTAL d'environ {target_words} mots de narration cumulés sur toutes les \
+scènes (tolérance : {target_words - word_tolerance} à {target_words + word_tolerance} mots).
+- "duration_hint" reste une estimation informative (secondes) mais n'a pas besoin \
+d'être précise : respecte plutôt scrupuleusement la contrainte de mots ci-dessus.
 - Chaque personnage listé dans "characters" a une "physical_description" STABLE : \
 ne décris jamais un même personnage différemment d'une scène à l'autre.
 - Histoire complète avec un début, un développement et une fin claire, écrite pour \
 être racontée à voix haute (phrases courtes, orales, immersives)."""
+
+
+def _estimate_duration_s(story: Story) -> float:
+    """Estimation de la durée totale à partir du nombre de mots RÉELS des
+    narrations et du débit calibré — bien plus fiable que la somme des
+    ``duration_hint`` générés par le LLM (voir CALIBRATED_WORDS_PER_SECOND)."""
+    total_words = sum(len(scene.narration.split()) for scene in story.scenes)
+    return total_words / CALIBRATED_WORDS_PER_SECOND
 
 
 def _extract_json_block(text: str) -> str:
@@ -186,6 +206,14 @@ def generate_story(
                     continue
                 logger.warning("JSON toujours invalide depuis %s après relance — modèle suivant.", model)
                 break
+
+            estimated_s = _estimate_duration_s(story)
+            if estimated_s < duration_s * 0.8:
+                logger.warning(
+                    "Story générée par %s : ~%.0fs estimées sur les mots réels vs %ds visés "
+                    "(duration_hint sommé = %.0fs, peu fiable) — sous-régime probable au montage.",
+                    model, estimated_s, duration_s, story.total_duration_hint,
+                )
 
             story_path.write_text(story.model_dump_json(indent=2), encoding="utf-8")
             logger.info("story.json généré via %s -> %s", model, story_path)

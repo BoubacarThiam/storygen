@@ -1,9 +1,8 @@
 """Point d'entrée CLI de StoryGen (``uv run storygen ...``).
 
-Statut actuel — Phase 1 : seule la scénarisation est implémentée.
-``--format``, ``--voice`` et ``--dry-run`` sont déjà acceptés pour figer
-l'interface finale, mais ne font encore rien : ils seront branchés aux
-Phases 2 à 4 sans casser cette commande.
+Statut actuel — Phase 2 : scénarisation + images + voix. ``--dry-run`` est
+déjà accepté pour figer l'interface finale, mais ne fait encore rien : il
+sera branché en Phase 4 sans casser cette commande.
 """
 
 from __future__ import annotations
@@ -12,7 +11,9 @@ import argparse
 import logging
 
 from storygen import config
+from storygen.steps.images import generate_images
 from storygen.steps.script import generate_story
+from storygen.steps.voice import generate_voices
 
 logger = logging.getLogger("storygen.cli")
 
@@ -29,11 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--format", choices=["9:16", "16:9"], default=config.DEFAULT_FORMAT,
-        help="[Phase 3, pas encore actif] Format de sortie.",
+        help="Format de sortie (détermine la résolution des images ; le montage arrive en Phase 3).",
     )
     parser.add_argument(
         "--voice", default=config.DEFAULT_VOICE,
-        help="[Phase 2, pas encore actif] Voix edge-tts.",
+        help="Voix edge-tts.",
     )
     parser.add_argument("--force", action="store_true", help="Ignore le cache et régénère.")
     parser.add_argument(
@@ -51,12 +52,18 @@ def main() -> None:
         print("⚠️  --dry-run arrive en Phase 4. Exécution normale de la Phase 1 pour l'instant.\n")
 
     story, story_dir = generate_story(args.prompt, duration_s=args.duration, force=args.force)
+    print(f"\n✅ Phase 1 (scénarisation) : {story_dir / 'story.json'}")
+    print(f"   Titre : {story.title}  |  Scènes : {len(story.scenes)}")
 
-    print(f"\n✅ Phase 1 (scénarisation) terminée : {story_dir / 'story.json'}")
-    print(f"   Titre        : {story.title}")
-    print(f"   Scènes       : {len(story.scenes)}")
-    print(f"   Durée visée  : {args.duration}s  (somme des duration_hint : {story.total_duration_hint:.1f}s)")
-    print("\n⚠️  Images, voix, sous-titres et montage arrivent en Phase 2/3 — pas encore exécutés ici.")
+    image_paths = generate_images(story, story_dir, fmt=args.format, force=args.force)
+    print(f"✅ Phase 2a (images)      : {len(image_paths)} image(s) dans {story_dir / 'assets' / 'img'}")
+
+    durations = generate_voices(story, story_dir, voice=args.voice, force=args.force)
+    real_total = sum(durations.values())
+    print(f"✅ Phase 2b (voix off)    : {len(durations)} piste(s), durée réelle totale {real_total:.1f}s "
+          f"(visée : {args.duration}s)")
+
+    print("\n⚠️  Sous-titres et montage arrivent en Phase 3 — pas encore exécutés ici.")
 
 
 if __name__ == "__main__":

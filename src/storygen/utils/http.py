@@ -8,18 +8,31 @@ téléchargement binaire avec retry ne justifient pas la dépendance.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
+
+logger = logging.getLogger("storygen.http")
+
+# Constat réel (Phase 2) : Pollinations (derrière Cloudflare) renvoie 403 sur
+# le User-Agent par défaut d'urllib ("Python-urllib/3.x"), alors qu'il laisse
+# passer curl ou une requête sans User-Agent. On s'identifie explicitement
+# plutôt que de se faire passer pour autre chose.
+DEFAULT_USER_AGENT = "StoryGen/0.1 (+https://github.com/BoubacarThiam/storygen)"
 
 
 class HttpError(RuntimeError):
     """Erreur réseau ou HTTP normalisée pour toutes les étapes du pipeline."""
 
 
+def _with_default_ua(headers: dict[str, str] | None) -> dict[str, str]:
+    return {"User-Agent": DEFAULT_USER_AGENT, **(headers or {})}
+
+
 def get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 30.0) -> Any:
-    req = urllib.request.Request(url, headers=headers or {}, method="GET")
+    req = urllib.request.Request(url, headers=_with_default_ua(headers), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -37,7 +50,7 @@ def post_json(
     timeout: float = 60.0,
 ) -> Any:
     body = json.dumps(payload).encode("utf-8")
-    req_headers = {"Content-Type": "application/json", **(headers or {})}
+    req_headers = _with_default_ua({"Content-Type": "application/json", **(headers or {})})
     req = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -49,17 +62,35 @@ def post_json(
         raise HttpError(f"Échec réseau sur {url} : {e}") from e
 
 
-def download_binary(url: str, timeout: float = 60.0, retries: int = 3) -> bytes:
-    """Téléchargement avec retry exponentiel (utilisé par steps/images.py,
-    Phase 2) : 3 essais, pause 1s/2s/4s entre les tentatives."""
+def download_binary(
+    url: str,
+    timeout: float = 60.0,
+    retries: int = 3,
+    validate: Callable[[bytes], bool] | None = None,
+) -> bytes:
+    """Téléchargement avec retry exponentiel (utilisé par steps/images.py) :
+    3 essais, pause 1s/2s/4s entre les tentatives. Si ``validate`` est fourni
+    et renvoie False (contenu vide/corrompu/page d'erreur déguisée en 200),
+    le téléchargement est traité comme un échec et retenté comme les autres.
+    Vérifie aussi que la taille reçue correspond à Content-Length quand
+    l'en-tête est présent, pour détecter un flux tronqué."""
     last_error: Exception | None = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, method="GET")
+            req = urllib.request.Request(url, headers=_with_default_ua(None), method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
-        except (urllib.error.URLError, TimeoutError) as e:
+                data = resp.read()
+                content_length = resp.headers.get("Content-Length")
+                if content_length is not None and int(content_length) != len(data):
+                    raise HttpError(
+                        f"Téléchargement tronqué : {len(data)}/{content_length} octets reçus"
+                    )
+            if validate is not None and not validate(data):
+                raise HttpError("Contenu téléchargé invalide (échec de la validation)")
+            return data
+        except (urllib.error.URLError, TimeoutError, HttpError) as e:
             last_error = e
             if attempt < retries - 1:
+                logger.warning("Échec téléchargement %s (%s) — tentative %d/%d...", url, e, attempt + 2, retries)
                 time.sleep(2**attempt)
     raise HttpError(f"Échec après {retries} tentatives sur {url} : {last_error}")

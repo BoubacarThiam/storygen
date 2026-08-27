@@ -17,7 +17,14 @@ from __future__ import annotations
 
 import unittest
 
-from storygen.steps.script import _extract_json_block, discover_free_models
+from storygen.models import Story
+from storygen.steps.script import (
+    CALIBRATED_WORDS_PER_SECOND,
+    _estimate_duration_s,
+    _extract_json_block,
+    build_system_prompt,
+    discover_free_models,
+)
 from storygen.utils.cache import slugify
 
 
@@ -48,6 +55,37 @@ class TestSlugify(unittest.TestCase):
 
     def test_empty_falls_back(self) -> None:
         self.assertEqual(slugify("???"), "histoire")
+
+
+class TestEstimateDurationS(unittest.TestCase):
+    def test_matches_calibrated_rate(self) -> None:
+        story = Story.model_validate(
+            {
+                "title": "T",
+                "logline": "L",
+                "style_bible": {"art_style": "x", "palette": "y", "seed": 1},
+                "characters": [],
+                "scenes": [
+                    {
+                        "index": 1,
+                        # exactement 10 mots
+                        "narration": "Un deux trois quatre cinq six sept huit neuf dix",
+                        "image_prompt": "x",
+                        "characters_present": [],
+                        "duration_hint": 1.0,
+                    }
+                ],
+            }
+        )
+        self.assertAlmostEqual(_estimate_duration_s(story), 10 / CALIBRATED_WORDS_PER_SECOND)
+
+
+class TestBuildSystemPrompt(unittest.TestCase):
+    def test_states_word_count_target_not_just_duration_hint(self) -> None:
+        prompt = build_system_prompt(90)
+        self.assertIn("ENTRE 15 ET 25 MOTS", prompt)
+        target_words = round(90 * CALIBRATED_WORDS_PER_SECOND)
+        self.assertIn(str(target_words), prompt)
 
 
 class TestDiscoverFreeModelsLive(unittest.TestCase):
