@@ -91,10 +91,13 @@ git push   # le repo doit être sur GitHub
 Limites réelles assumées du plan gratuit (voir aussi `webapp.py`) :
 
 - **CPU/RAM limités** (0.1 CPU, 512 Mo) : whisper + ffmpeg y sont nettement plus lents qu'en local — une vidéo de 60s peut prendre 15-20 minutes au lieu de 3-4.
-- **OOM constaté en conditions réelles** : le modèle `base` (~150 Mo) suffisait à faire planter (502, job perdu) le conteneur pendant la transcription elle-même, même avec le modèle libéré explicitement avant le montage (`steps/subtitles.unload_model()`, appelé par `webapp.py`) et le Ken Burns réglé sur un agrandissement ×1 (`STORYGEN_MONTAGE_UPSCALE=1`). Le déploiement utilise donc `tiny` (~75 Mo) — transcription nettement moins précise, mais le seul réglage qui tient dans 512 Mo à ce jour.
+- **OOM constaté en conditions réelles, à deux endroits différents** : d'abord le modèle whisper `base` (~150 Mo) plantait (502, job perdu) pendant la transcription elle-même ; une fois passé sur `tiny` (~75 Mo) + modèle libéré avant le montage (`steps/subtitles.unload_model()`), le plantage s'est déplacé sur **l'encodage ffmpeg lui-même** en pleine résolution (1080x1920). Trois réglages ont été nécessaires ensemble pour tenir dans 512 Mo :
+  - `STORYGEN_WHISPER_MODEL=tiny` (au lieu de `small` en local)
+  - `STORYGEN_MONTAGE_UPSCALE=1` (pas de pré-agrandissement avant le Ken Burns)
+  - `STORYGEN_OUTPUT_SCALE=0.5` (vidéo finale en 540x960 plutôt que 1080x1920 — proche de la résolution native reçue de Pollinations, donc sans perte de netteté visible) + `STORYGEN_FFMPEG_THREADS=2` (évite que libx264 sur-alloue des buffers par thread sur un CPU partagé)
 - **Mise en veille après 15 min d'inactivité**, réveil ~30-60s au prochain visiteur. La page interroge `/status` toutes les 4s pendant une génération, ce qui maintient le service actif tant qu'un onglet reste ouvert.
 - **Disque éphémère** : les jobs (en mémoire) et les vidéos déjà générées sont perdus au redémarrage du service (déploiement, ou crash) — télécharge le MP4 dès qu'il est prêt. Un vrai usage multi-utilisateurs voudrait une file de jobs (Redis/RQ) et un stockage objet persistant (S3/R2) à la place.
-- Si les plantages persistent même avec `tiny`, l'étape suivante réaliste est de passer sur un plan payant (plus de RAM) plutôt que de continuer à dégrader la qualité — 512 Mo est une contrainte dure pour whisper + ffmpeg + Python ensemble.
+- Si les plantages persistent malgré tout ça, l'étape suivante réaliste est de passer sur un plan payant (plus de RAM) plutôt que de continuer à dégrader la qualité — 512 Mo est une contrainte dure pour whisper + ffmpeg + Python ensemble.
 
 Tester l'image Docker en local avant de déployer :
 

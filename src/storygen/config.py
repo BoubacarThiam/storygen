@@ -31,6 +31,21 @@ WHISPER_MODEL_SIZE = os.environ.get("STORYGEN_WHISPER_MODEL", "small")
 # mémoire + facteur 2 — voir aussi steps/subtitles.unload_model()).
 MONTAGE_UPSCALE_FACTOR = int(os.environ.get("STORYGEN_MONTAGE_UPSCALE", "2"))
 
+# Facteur d'échelle appliqué à la résolution de sortie (steps/montage.py) :
+# 1.0 = résolution native du format (1080x1920 / 1920x1080). Constaté en
+# conditions réelles sur Render free (512 Mo) : même après tiny + upscale
+# x1, libx264 en pleine résolution suffit encore à faire planter (OOM) le
+# conteneur pendant l'encodage. Réduire cette échelle diminue d'autant la
+# mémoire nécessaire (proportionnelle au nombre de pixels).
+MONTAGE_OUTPUT_SCALE = float(os.environ.get("STORYGEN_OUTPUT_SCALE", "1.0"))
+
+# Threads ffmpeg pour l'encodage (steps/montage.py). ``0`` = auto-détection
+# par ffmpeg, qui peut sur-allouer des buffers par thread sur un conteneur
+# où plusieurs CPU logiques sont visibles mais où le quota réel est très
+# inférieur (ex. Render free, "0.1 CPU") — un cap explicite réduit la
+# mémoire de pointe sans changer la qualité de sortie.
+MONTAGE_FFMPEG_THREADS = int(os.environ.get("STORYGEN_FFMPEG_THREADS", "0"))
+
 # Choix validé avec l'utilisateur : police système déjà présente, zéro
 # fichier binaire supplémentaire à versionner.
 SUBTITLE_FONT = "DejaVu Sans"

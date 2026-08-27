@@ -54,6 +54,11 @@ def _escape_filter_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
+def _threads_args() -> list[str]:
+    threads = config.MONTAGE_FFMPEG_THREADS
+    return ["-threads", str(threads)] if threads > 0 else []
+
+
 def _build_scene_clip(
     image_path: Path, audio_path: Path, duration: float, width: int, height: int, out_path: Path
 ) -> None:
@@ -73,6 +78,7 @@ def _build_scene_clip(
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "1:a",
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        *_threads_args(),
         "-c:a", "aac", "-b:a", "128k",
         "-t", f"{duration:.3f}", "-shortest",
         str(out_path),
@@ -99,6 +105,7 @@ def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path) -> None:
         "-i", str(video_path),
         "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        *_threads_args(),
         "-c:a", "copy",
         str(out_path),
     ])
@@ -116,7 +123,10 @@ def generate_montage(
     dans ``output/{slug}.mp4``. Retourne le chemin du fichier produit."""
     if fmt not in FORMAT_DIMENSIONS:
         raise ValueError(f"Format inconnu : {fmt!r} (attendu : {list(FORMAT_DIMENSIONS)})")
-    width, height = FORMAT_DIMENSIONS[fmt]
+    base_width, base_height = FORMAT_DIMENSIONS[fmt]
+    scale = config.MONTAGE_OUTPUT_SCALE
+    width = round(base_width * scale / 2) * 2
+    height = round(base_height * scale / 2) * 2
 
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     final_path = config.OUTPUT_DIR / f"{story_dir.name}.mp4"

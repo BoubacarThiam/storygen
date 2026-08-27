@@ -21,5 +21,9 @@ services:
         value: tiny
       - key: STORYGEN_MONTAGE_UPSCALE
         value: "1"
+      - key: STORYGEN_OUTPUT_SCALE
+        value: "0.5"
+      - key: STORYGEN_FFMPEG_THREADS
+        value: "2"
       - key: PYTHONUNBUFFERED
         value: "1"
