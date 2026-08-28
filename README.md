@@ -25,7 +25,8 @@ Aucun service payant : [OpenRouter](https://openrouter.ai/) (modèles `:free`),
 - **Pollinations ignore aussi la résolution demandée** (`width`/`height` dans l'URL) et plafonne systématiquement à 1024 px sur le plus grand côté (ex. `576x1024` reçu pour une demande 9:16), mais respecte le ratio. `steps/montage.py` ré-agrandit donc chaque image avant le Ken Burns plutôt que de compter sur la résolution demandée.
 - **`zoompan` tremble visiblement sur une image de petite taille** (quantification interne au pixel) : un pré-agrandissement ×2 avant le zoom/pan (filtre `scale`, lanczos) lisse largement l'effet.
 - **Le modèle faster-whisper `small` (~500 Mo) se télécharge depuis Hugging Face au premier lancement** (aucune clé requise, mais peut prendre plusieurs minutes selon la connexion) — normal une seule fois, mis en cache ensuite dans `~/.cache/huggingface`.
-- Limite connue (candidate Phase 4) : un segment whisper correspondant à une phrase longue peut se retrouver découpé en 4-5 lignes de sous-titres affichées en même temps — lisible, mais pas idéal visuellement. Un vrai découpage par groupes de mots avec timing (`word_timestamps=True`) donnerait un rendu plus proche des standards (2 lignes max, incrustées progressivement).
+- Limite connue (candidate Phase 4) : un segment whisper correspondant à une phrase longue peut se retrouver découpé en 3-4 lignes de sous-titres affichées en même temps — lisible, mais pas idéal visuellement. Un vrai découpage par groupes de mots avec timing (`word_timestamps=True`) donnerait un rendu plus proche des standards (2 lignes max, incrustées progressivement).
+- **Le filtre `subtitles` de ffmpeg utilise une résolution de référence interne minuscule par défaut** pour interpréter `Fontsize` — sans le paramètre `original_size`, la police de sous-titrage devient disproportionnée dès qu'on change la résolution de sortie (constaté : illisiblement grande à 540x960 avec le même réglage qu'à 1080x1920). `steps/montage.py` fixe `original_size` sur la résolution de référence du format pour que la taille reste stable quel que soit `STORYGEN_OUTPUT_SCALE`.
 
 ## Installation
 
@@ -74,9 +75,14 @@ uv run uvicorn storygen.webapp:app --reload
 # -> http://127.0.0.1:8000
 ```
 
-Formulaire (prompt, durée, format, voix) → génération en tâche de fond →
-lien vers le MP4 une fois prêt. Compte 1 à 5 minutes par vidéo en local ;
-plus lent sur un hébergement gratuit à faible CPU (voir Déploiement).
+Formulaire (prompt, durée, format, voix) → progression étape par étape
+(scénarisation/images/voix/sous-titres/montage) → vidéo à regarder et
+télécharger une fois prête, avec reprise en un clic (« Réessayer ») sur
+échec. Compte 1 à 5 minutes par vidéo en local ; plus lent sur un
+hébergement gratuit à faible CPU (voir Déploiement). Design documenté dans
+[`PRODUCT.md`](PRODUCT.md) — registre « produit » volontairement sobre
+(un seul accent chaud, palette neutre sombre), distinct du traitement
+éditorial des pages de prévisualisation ponctuelles (Artifacts).
 
 ### Déploiement (Render, gratuit)
 

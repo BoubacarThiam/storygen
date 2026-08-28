@@ -118,14 +118,18 @@ _INDEX_TEMPLATE = (Path(__file__).parent / "templates" / "index.html").read_text
 
 
 def _render_index() -> str:
-    options = "".join(
+    format_options = "".join(
         f'<option value="{fmt}"{" selected" if fmt == config.DEFAULT_FORMAT else ""}>{fmt}</option>'
         for fmt in FORMAT_DIMENSIONS
     )
+    voice_options = "".join(
+        f'<option value="{value}"{" selected" if value == config.DEFAULT_VOICE else ""}>{label}</option>'
+        for value, label in config.FRENCH_VOICES
+    )
     return (
         _INDEX_TEMPLATE
-        .replace("__FORMAT_OPTIONS__", options)
-        .replace("__DEFAULT_VOICE__", config.DEFAULT_VOICE)
+        .replace("__FORMAT_OPTIONS__", format_options)
+        .replace("__VOICE_OPTIONS__", voice_options)
     )
 
 

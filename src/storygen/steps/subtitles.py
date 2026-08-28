@@ -30,7 +30,7 @@ from storygen.utils.ffmpeg import probe_duration
 
 logger = logging.getLogger("storygen.subtitles")
 
-MAX_LINE_CHARS = 42  # convention sous-titrage classique (au plus 2 lignes lisibles à l'écran)
+MAX_LINE_CHARS = 56  # limite le nombre de lignes affichées simultanément (voir constat "limite connue" au README)
 MIN_SRT_SIZE = 10
 
 # Chargé une seule fois par process : le modèle "small" (~500 Mo, téléchargé

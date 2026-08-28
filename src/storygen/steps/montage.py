@@ -95,12 +95,19 @@ def _concat_clips(clip_paths: list[Path], out_path: Path, tmp_dir: Path) -> None
     run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(out_path)])
 
 
-def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path) -> None:
+def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path, ref_width: int, ref_height: int) -> None:
+    # Constat réel : sans ``original_size``, le filtre "subtitles" applique
+    # une résolution de référence interne minuscule (proche de l'ancien
+    # défaut ASS 384x288) pour interpréter Fontsize — la taille de police
+    # explose alors proportionnellement dès qu'on réduit la résolution de
+    # sortie (ex. STORYGEN_OUTPUT_SCALE). Fixer original_size sur la
+    # résolution de référence du format (avant mise à l'échelle) rend
+    # Fontsize stable quel que soit STORYGEN_OUTPUT_SCALE.
     style = (
-        f"FontName={config.SUBTITLE_FONT},Fontsize=20,PrimaryColour=&H00FFFFFF,"
+        f"FontName={config.SUBTITLE_FONT},Fontsize=14,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=80"
     )
-    vf = f"subtitles={_escape_filter_path(srt_path)}:force_style='{style}'"
+    vf = f"subtitles={_escape_filter_path(srt_path)}:original_size={ref_width}x{ref_height}:force_style='{style}'"
     run_ffmpeg([
         "-i", str(video_path),
         "-vf", vf,
@@ -165,7 +172,7 @@ def generate_montage(
 
         logger.info("Incrustation des sous-titres...")
         try:
-            _burn_subtitles(concat_path, srt_path, final_path)
+            _burn_subtitles(concat_path, srt_path, final_path, base_width, base_height)
         except FfmpegError:
             final_path.unlink(missing_ok=True)
             raise

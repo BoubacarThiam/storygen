@@ -16,6 +16,16 @@ WORK_DIR = PROJECT_ROOT / "work"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
 DEFAULT_VOICE = "fr-FR-RemyMultilingualNeural"
+
+# Sélection courte de voix edge-tts françaises pour le menu déroulant de
+# l'interface web (webapp.py) — édit-tts en propose des dizaines, la
+# plupart inutiles ici ; ces 4 couvrent homme/femme et le nécessaire.
+FRENCH_VOICES = [
+    ("fr-FR-RemyMultilingualNeural", "Rémy (homme)"),
+    ("fr-FR-HenriNeural", "Henri (homme)"),
+    ("fr-FR-DeniseNeural", "Denise (femme)"),
+    ("fr-FR-VivienneMultilingualNeural", "Vivienne (femme)"),
+]
 DEFAULT_DURATION_S = 90
 DEFAULT_FORMAT = "9:16"
 # Surchargeable via STORYGEN_WHISPER_MODEL : sur un hébergement gratuit à RAM
