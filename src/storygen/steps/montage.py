@@ -77,9 +77,9 @@ def _build_scene_clip(
         "-i", str(audio_path),
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "1:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(config.MONTAGE_CRF), "-pix_fmt", "yuv420p",
         *_threads_args(),
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", "96k",
         "-t", f"{duration:.3f}", "-shortest",
         str(out_path),
     ])
@@ -111,7 +111,7 @@ def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path, ref_width:
     run_ffmpeg([
         "-i", str(video_path),
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(config.MONTAGE_CRF), "-pix_fmt", "yuv420p",
         *_threads_args(),
         "-c:a", "copy",
         str(out_path),

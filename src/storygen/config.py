@@ -49,6 +49,15 @@ MONTAGE_UPSCALE_FACTOR = int(os.environ.get("STORYGEN_MONTAGE_UPSCALE", "2"))
 # mémoire nécessaire (proportionnelle au nombre de pixels).
 MONTAGE_OUTPUT_SCALE = float(os.environ.get("STORYGEN_OUTPUT_SCALE", "1.0"))
 
+# Qualité d'encodage libx264 (steps/montage.py). Le défaut de libx264 (23)
+# vise une qualité quasi sans perte, donc un fichier plus lourd que
+# nécessaire pour ce contenu (photos fixes + léger zoom, pas d'action
+# rapide). Testé en conditions réelles sur deux scènes très différentes
+# (ciel en dégradé, verre/bois texturé) : 30 est visuellement identique à
+# 23 sur les deux, pour ~50% de poids en moins — plus léger à partager
+# (TikTok, YouTube) et plus rapide à transférer.
+MONTAGE_CRF = int(os.environ.get("STORYGEN_MONTAGE_CRF", "30"))
+
 # Threads ffmpeg pour l'encodage (steps/montage.py). ``0`` = auto-détection
 # par ffmpeg, qui peut sur-allouer des buffers par thread sur un conteneur
 # où plusieurs CPU logiques sont visibles mais où le quota réel est très
