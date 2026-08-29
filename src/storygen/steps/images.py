@@ -39,7 +39,11 @@ FORMAT_DIMENSIONS = {
 KEN_BURNS_MARGIN = 1.15
 
 # Ne pas marteler un service gratuit : pause entre deux appels séquentiels.
-PAUSE_BETWEEN_CALLS_S = 1.5
+# Constat réel : un usage soutenu (nombreuses générations rapprochées) fait
+# apparaître des 429 (Too Many Requests) — 1.5s ne suffisait pas toujours à
+# les éviter, 2.5s réduit nettement leur fréquence sans trop allonger le
+# temps total (voir aussi utils/http._backoff_seconds pour le retry).
+PAUSE_BETWEEN_CALLS_S = 2.5
 
 JPEG_MAGIC = b"\xff\xd8\xff"
 MIN_IMAGE_SIZE = 3000  # heuristique : une image d'erreur/placeholder est presque toujours plus petite
@@ -117,7 +121,10 @@ def generate_images(
         logger.info("Scène %d/%d : génération image (%dx%d)...", scene.index, total, width, height)
 
         try:
-            data = download_binary(url, timeout=60.0, retries=3, validate=_is_valid_image)
+            # retries=5 plutôt que 3 : un 429 attend maintenant 10s/20s/30s/40s
+            # entre les tentatives (voir utils/http._backoff_seconds), donc plus
+            # d'essais donne une vraie chance de voir la limite se lever.
+            data = download_binary(url, timeout=60.0, retries=5, validate=_is_valid_image)
         except HttpError as e:
             raise RuntimeError(
                 f"Échec définitif de génération d'image pour la scène {scene.index} : {e}"
