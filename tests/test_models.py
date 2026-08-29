@@ -6,7 +6,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from storygen.models import Story
+from storygen.models import SEED_MAX, StyleBible, Story
 
 VALID_STORY = {
     "title": "La bouteille du pêcheur",
@@ -88,6 +88,25 @@ class TestStorySchema(unittest.TestCase):
         }
         with self.assertRaises(ValidationError):
             Story.model_validate(bad)
+
+
+class TestSeedClamping(unittest.TestCase):
+    """Constat réel : Pollinations renvoie un 500 (pas une erreur propre)
+    dès que ``seed`` dépasse un entier signé 32 bits — un modèle :free a
+    produit 3081976424, faisant échouer toute la génération d'images."""
+
+    def test_seed_within_range_is_unchanged(self) -> None:
+        self.assertEqual(StyleBible(art_style="x", palette="y", seed=48231).seed, 48231)
+
+    def test_seed_above_int32_max_is_clamped(self) -> None:
+        seed = StyleBible(art_style="x", palette="y", seed=3081976424).seed
+        self.assertLessEqual(seed, SEED_MAX)
+        self.assertGreaterEqual(seed, 0)
+
+    def test_negative_seed_is_clamped_to_non_negative(self) -> None:
+        seed = StyleBible(art_style="x", palette="y", seed=-5).seed
+        self.assertGreaterEqual(seed, 0)
+        self.assertLessEqual(seed, SEED_MAX)
 
 
 if __name__ == "__main__":

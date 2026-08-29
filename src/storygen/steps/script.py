@@ -82,7 +82,7 @@ RÈGLES DE SORTIE — CRITIQUES :
   "style_bible": {{
     "art_style": string (style visuel, EN ANGLAIS, ex: "warm watercolor illustration, soft cinematic lighting"),
     "palette": string (couleurs dominantes, EN ANGLAIS),
-    "seed": integer (entier fixe, choisi une fois, réutilisé pour toutes les scènes)
+    "seed": integer entre 1 et 999999 (entier fixe, choisi une fois, réutilisé pour toutes les scènes)
   }},
   "characters": [
     {{ "id": string (slug court en minuscules, ex: "pecheur"), "physical_description": string (EN ANGLAIS, précis, réutilisable tel quel dans un prompt d'image) }}

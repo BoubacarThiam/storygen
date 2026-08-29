@@ -7,7 +7,14 @@ montage). Voir le master prompt pour le contrat d'origine.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Constat réel : Pollinations renvoie un 500 (pas une erreur propre) dès que
+# ``seed`` dépasse l'intervalle d'un entier signé 32 bits — probablement un
+# int32 quelque part dans leur pipeline. Le prompt système de script.py ne
+# donne aucune borne au LLM, qui a produit un seed de 10 chiffres
+# (3081976424) faisant échouer toute la génération d'images de l'histoire.
+SEED_MAX = 2_147_483_647  # 2**31 - 1
 
 
 class StyleBible(BaseModel):
@@ -16,6 +23,15 @@ class StyleBible(BaseModel):
     art_style: str = Field(..., min_length=1)
     palette: str = Field(..., min_length=1)
     seed: int
+
+    @field_validator("seed")
+    @classmethod
+    def _clamp_seed(cls, v: int) -> int:
+        """Ramène tout entier (y compris négatif ou hors int32) dans
+        l'intervalle accepté par Pollinations, plutôt que de faire échouer
+        toute la génération d'images pour un seed que le LLM a choisi trop
+        grand (voir SEED_MAX)."""
+        return abs(v) % (SEED_MAX + 1)
 
 
 class Character(BaseModel):
