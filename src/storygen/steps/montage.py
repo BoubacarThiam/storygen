@@ -70,7 +70,14 @@ def _build_scene_clip(
         f"[0:v]scale={upscale_w}:{upscale_h}:flags=lanczos,"
         f"zoompan=z='min(zoom+{zoom_step:.8f},{ZOOM_MAX})':d={frames}:"
         "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"s={width}x{height}:fps={FPS}[v]"
+        f"s={width}x{height}:fps={FPS},"
+        # Pollinations plafonne la source à ~576x1024 (voir constat plus
+        # haut) quelle que soit la résolution demandée : le Ken Burns
+        # agrandit donc toujours une image relativement petite, ce qui
+        # adoucit les détails. Un unsharp léger sur la luminance compense
+        # ce flou sans créer d'artefacts visibles (testé sur un ciel en
+        # dégradé et une texture fine — aucun halo, aucune bande de couleur).
+        "unsharp=5:5:0.9:5:5:0.0[v]"
     )
     run_ffmpeg([
         "-loop", "1", "-i", str(image_path),
@@ -104,7 +111,7 @@ def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path, ref_width:
     # résolution de référence du format (avant mise à l'échelle) rend
     # Fontsize stable quel que soit STORYGEN_OUTPUT_SCALE.
     style = (
-        f"FontName={config.SUBTITLE_FONT},Fontsize=14,PrimaryColour=&H00FFFFFF,"
+        f"FontName={config.SUBTITLE_FONT},Fontsize=10,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=80"
     )
     vf = f"subtitles={_escape_filter_path(srt_path)}:original_size={ref_width}x{ref_height}:force_style='{style}'"
