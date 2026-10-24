@@ -92,6 +92,7 @@ RÈGLES DE SORTIE — CRITIQUES :
       "index": integer (commence à 1, continu),
       "narration": string (texte lu par la voix off, EN FRANÇAIS, entre 15 et 25 mots),
       "image_prompt": string (EN ANGLAIS, décrit UNIQUEMENT l'action/le cadre de cette scène : ne redécris ni les personnages ni le style, ils seront ajoutés automatiquement),
+      "motion_prompt": string (EN ANGLAIS, la MÊME scène un court instant PLUS TARD, avec un mouvement réel visible : le personnage fait un pas, l'eau ondule, la fumée monte, les feuilles bougent... Même lieu, même cadrage, même composition que "image_prompt" ; ne redécris ni les personnages ni le style),
       "characters_present": [string] (ids de "characters" présents dans cette scène, [] si aucun),
       "duration_hint": number (secondes, estimation réaliste de la lecture de "narration" à un débit naturel)
     }}
@@ -109,6 +110,10 @@ plutôt que d'écourter. C'est le nombre de mots réellement écrits, pas \
 scènes (tolérance : {target_words - word_tolerance} à {target_words + word_tolerance} mots).
 - "duration_hint" reste une estimation informative (secondes) mais n'a pas besoin \
 d'être précise : respecte plutôt scrupuleusement la contrainte de mots ci-dessus.
+- "motion_prompt" doit rester TRÈS proche de "image_prompt" (même plan, même lieu, \
+même lumière) : les deux images seront fondues l'une dans l'autre pour donner une \
+impression de mouvement continu. Décris un geste ou un déplacement concret et \
+visible, pas un changement de scène.
 - Chaque personnage listé dans "characters" a une "physical_description" STABLE : \
 ne décris jamais un même personnage différemment d'une scène à l'autre.
 - Histoire complète avec un début, un développement et une fin claire, écrite pour \

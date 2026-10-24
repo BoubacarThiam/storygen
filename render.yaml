@@ -25,5 +25,19 @@ services:
         value: "0.5"
       - key: STORYGEN_FFMPEG_THREADS
         value: "2"
+      # Anime chaque scène (deux images fondues). Mettre "0" si le plan
+      # gratuit manque de CPU.
+      - key: STORYGEN_ANIMATE
+        value: "1"
+      # Qualité un peu au-dessus de l'ancien CRF 30, sans alourdir à l'excès.
+      - key: STORYGEN_MONTAGE_CRF
+        value: "23"
+      - key: STORYGEN_MONTAGE_FPS
+        value: "30"
+      # Génération d'images parallèle, mais modérée sur 0.1 CPU.
+      - key: STORYGEN_IMAGE_CONCURRENCY
+        value: "2"
+      - key: STORYGEN_IMAGE_STAGGER
+        value: "1.0"
       - key: PYTHONUNBUFFERED
         value: "1"

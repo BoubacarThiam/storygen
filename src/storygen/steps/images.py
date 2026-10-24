@@ -8,6 +8,13 @@ physical_description de chaque personnage présent dans la scène sont
 automatiquement concaténés à image_prompt avant l'appel à Pollinations — le
 LLM n'a jamais à redécrire un personnage.
 
+Animation : pour chaque scène, une seconde image « un instant plus tard »
+est générée (``scene_XX_motion.jpg``) à partir de ``motion_prompt``. Le
+montage fond de l'une à l'autre pour donner un vrai mouvement de contenu,
+plutôt qu'un simple zoom Ken Burns sur une photo figée. Les deux images
+sont générées en parallèle (``STORYGEN_IMAGE_CONCURRENCY``) pour rester
+rapide malgré le double d'appels.
+
 Constat réel important (signalé à l'utilisateur) : contrairement à ce que
 son nom laisse penser, l'endpoint Pollinations renvoie du JPEG
 (Content-Type: image/jpeg), jamais du PNG, quels que soient les paramètres
@@ -20,10 +27,11 @@ import argparse
 import logging
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from storygen import config
-from storygen.models import Scene, Story
+from storygen.models import SEED_MAX, Scene, Story
 from storygen.utils.cache import is_fresh
 from storygen.utils.http import HttpError, download_binary
 
@@ -38,17 +46,18 @@ FORMAT_DIMENSIONS = {
 # Ken Burns (zoompan, Phase 3) sans jamais montrer de bord noir.
 KEN_BURNS_MARGIN = 1.15
 
-# Ne pas marteler un service gratuit : pause entre deux appels séquentiels.
-# Constat réel : un usage soutenu (nombreuses générations rapprochées) fait
-# apparaître des 429 (Too Many Requests) — 1.5s ne suffisait pas toujours à
-# les éviter, 2.5s réduit nettement leur fréquence sans trop allonger le
-# temps total (voir aussi utils/http._backoff_seconds pour le retry).
-PAUSE_BETWEEN_CALLS_S = 2.5
-
 JPEG_MAGIC = b"\xff\xd8\xff"
 MIN_IMAGE_SIZE = 3000  # heuristique : une image d'erreur/placeholder est presque toujours plus petite
 
 _IMAGE_PROMPT_MAX_LEN = 800  # garde-fou pour la longueur d'URL une fois encodée
+
+# Ajouté automatiquement à image_prompt quand le LLM n'a pas fourni de
+# motion_prompt (anciens story.json) : garantit que chaque scène peut tout
+# de même être animée.
+MOTION_PROMPT_SUFFIX = (
+    "the same scene a moment later, visible natural motion, dynamic movement, "
+    "cinematic motion blur, same framing and composition"
+)
 
 
 def _dimensions_for_format(fmt: str) -> tuple[int, int]:
@@ -60,11 +69,22 @@ def _dimensions_for_format(fmt: str) -> tuple[int, int]:
     return w, h
 
 
-def build_full_image_prompt(story: Story, scene: Scene, max_len: int = _IMAGE_PROMPT_MAX_LEN) -> str:
+def build_full_image_prompt(
+    story: Story, scene: Scene, max_len: int = _IMAGE_PROMPT_MAX_LEN, motion: bool = False
+) -> str:
     """Concatène : action de la scène + descriptions des personnages présents
-    + style visuel global. C'est le cœur de la cohérence visuelle."""
+    + style visuel global. C'est le cœur de la cohérence visuelle.
+
+    Avec ``motion=True``, on utilise ``scene.motion_prompt`` (ou, à défaut,
+    ``image_prompt`` suffixé d'une indication de mouvement) pour produire la
+    seconde image-clé de la scène."""
     char_map = {c.id: c for c in story.characters}
-    parts = [scene.image_prompt]
+    if motion:
+        scene_part = scene.motion_prompt or f"{scene.image_prompt}, {MOTION_PROMPT_SUFFIX}"
+    else:
+        scene_part = scene.image_prompt
+
+    parts = [scene_part]
     for char_id in scene.characters_present:
         char = char_map.get(char_id)
         if char is not None:
@@ -94,50 +114,93 @@ def _is_valid_image(data: bytes) -> bool:
     return len(data) >= MIN_IMAGE_SIZE and data[:3] == JPEG_MAGIC
 
 
+def _download_one(url: str, target: Path, scene_index: int, label: str) -> None:
+    """Télécharge une image et l'écrit sur disque (exécuté dans un thread)."""
+    logger.info("Scène %d : génération %s...", scene_index, label)
+    # retries=5 : un 429 attend 10s/20s/30s/40s entre les tentatives (voir
+    # utils/http._backoff_seconds), donc plus d'essais donne une vraie chance
+    # de voir la limite se lever.
+    data = download_binary(url, timeout=90.0, retries=5, validate=_is_valid_image)
+    target.write_bytes(data)
+    logger.info("-> %s (%.0f Ko)", target, len(data) / 1024)
+
+
 def generate_images(
     story: Story,
     story_dir: Path,
     fmt: str = config.DEFAULT_FORMAT,
     force: bool = False,
 ) -> list[Path]:
-    """Génère (ou réutilise depuis le cache) une image par scène. Retourne
-    les chemins dans l'ordre des scènes."""
+    """Génère (ou réutilise depuis le cache) les images de chaque scène.
+    Retourne les chemins des images principales, dans l'ordre des scènes.
+
+    Les images de mouvement (``scene_XX_motion.jpg``) sont générées en plus
+    quand ``config.ANIMATE_SCENES`` est actif. Un échec sur une image de
+    mouvement n'est pas fatal : la scène retombe simplement sur le zoom
+    Ken Burns statique au montage."""
     img_dir = story_dir / "assets" / "img"
     img_dir.mkdir(parents=True, exist_ok=True)
     width, height = _dimensions_for_format(fmt)
-
-    paths: list[Path] = []
+    seed = story.style_bible.seed
+    motion_seed = (seed + 1) % (SEED_MAX + 1)
     total = len(story.scenes)
-    for i, scene in enumerate(story.scenes):
-        target = img_dir / f"scene_{scene.index:02d}.jpg"
 
-        if not force and is_fresh(target, min_size=MIN_IMAGE_SIZE):
-            logger.info("Cache hit : %s", target)
-            paths.append(target)
-            continue
+    # (url, cible, index de scène, libellé, obligatoire)
+    jobs: list[tuple[str, Path, int, str, bool]] = []
+    primary_paths: list[Path] = []
 
-        prompt = build_full_image_prompt(story, scene)
-        url = build_pollinations_url(prompt, story.style_bible.seed, width, height)
-        logger.info("Scène %d/%d : génération image (%dx%d)...", scene.index, total, width, height)
+    for scene in story.scenes:
+        primary = img_dir / f"scene_{scene.index:02d}.jpg"
+        primary_paths.append(primary)
+        if not force and is_fresh(primary, min_size=MIN_IMAGE_SIZE):
+            logger.info("Cache hit : %s", primary)
+        else:
+            prompt = build_full_image_prompt(story, scene)
+            url = build_pollinations_url(prompt, seed, width, height)
+            jobs.append((url, primary, scene.index, "image", True))
 
-        try:
-            # retries=5 plutôt que 3 : un 429 attend maintenant 10s/20s/30s/40s
-            # entre les tentatives (voir utils/http._backoff_seconds), donc plus
-            # d'essais donne une vraie chance de voir la limite se lever.
-            data = download_binary(url, timeout=60.0, retries=5, validate=_is_valid_image)
-        except HttpError as e:
-            raise RuntimeError(
-                f"Échec définitif de génération d'image pour la scène {scene.index} : {e}"
-            ) from e
+        if config.ANIMATE_SCENES:
+            motion = img_dir / f"scene_{scene.index:02d}_motion.jpg"
+            if not force and is_fresh(motion, min_size=MIN_IMAGE_SIZE):
+                logger.info("Cache hit : %s", motion)
+            else:
+                prompt = build_full_image_prompt(story, scene, motion=True)
+                url = build_pollinations_url(prompt, motion_seed, width, height)
+                jobs.append((url, motion, scene.index, "image de mouvement", False))
 
-        target.write_bytes(data)
-        logger.info("-> %s (%.0f Ko)", target, len(data) / 1024)
-        paths.append(target)
+    if jobs:
+        workers = min(config.IMAGE_CONCURRENCY, len(jobs))
+        logger.info(
+            "%d image(s) à générer pour %d scène(s) (concurrence : %d)...",
+            len(jobs), total, workers,
+        )
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="storygen-img") as pool:
+            future_jobs = {}
+            for url, target, scene_index, label, required in jobs:
+                future = pool.submit(_download_one, url, target, scene_index, label)
+                future_jobs[future] = (scene_index, label, required)
+                # Décalage entre soumissions : évite les rafales de 429.
+                if config.IMAGE_STAGGER_S > 0:
+                    time.sleep(config.IMAGE_STAGGER_S)
 
-        if i < total - 1:
-            time.sleep(PAUSE_BETWEEN_CALLS_S)
+            for future in as_completed(future_jobs):
+                scene_index, label, required = future_jobs[future]
+                try:
+                    future.result()
+                except HttpError as e:
+                    if required:
+                        for pending in future_jobs:
+                            pending.cancel()
+                        raise RuntimeError(
+                            f"Échec définitif de génération d'image pour la scène "
+                            f"{scene_index} : {e}"
+                        ) from e
+                    logger.warning(
+                        "Scène %d : %s indisponible (%s) — la scène utilisera le "
+                        "mouvement Ken Burns statique.", scene_index, label, e,
+                    )
 
-    return paths
+    return primary_paths
 
 
 def _cli() -> None:

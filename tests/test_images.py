@@ -55,6 +55,19 @@ class TestBuildFullImagePrompt(unittest.TestCase):
         prompt = build_full_image_prompt(STORY, STORY.scenes[0], max_len=20)
         self.assertLessEqual(len(prompt), 20)
 
+    def test_motion_uses_motion_prompt_when_present(self) -> None:
+        story = STORY.model_copy(deep=True)
+        story.scenes[0].motion_prompt = "the fisherman lifts the bottle, water splashes"
+        prompt = build_full_image_prompt(story, story.scenes[0], motion=True)
+        self.assertIn("lifts the bottle", prompt)
+        self.assertIn("old fisherman, blue boubou", prompt)
+        self.assertIn("warm watercolor", prompt)
+
+    def test_motion_falls_back_to_suffix_without_motion_prompt(self) -> None:
+        prompt = build_full_image_prompt(STORY, STORY.scenes[0], motion=True)
+        self.assertIn("a moment later", prompt)
+        self.assertIn("a boat on the sea at dawn", prompt)
+
 
 class TestBuildPollinationsUrl(unittest.TestCase):
     def test_url_contains_encoded_prompt_and_params(self) -> None:

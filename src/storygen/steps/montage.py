@@ -1,21 +1,20 @@
 """Étape 3b — Montage final : images + voix + sous-titres -> vidéo MP4
 (ffmpeg, en local, gratuit).
 
-Constat réel (fait écho à celui de steps/images.py) : Pollinations ignore
-la résolution demandée dans l'URL et plafonne systématiquement à 1024 px
-sur le plus grand côté, tout en respectant le ratio demandé (ex. reçu
-576x1024 pour une demande 9:16, alors que la résolution de sortie visée
-est 1080x1920). Chaque image est donc ré-agrandie avant le zoompan Ken
-Burns plutôt que simplement recadrée — un léger lissage plutôt qu'une
-perte de cadrage, le ratio étant déjà identique.
+Deux améliorations structurantes par rapport à la première version :
 
-Pipeline, par scène : image statique zoomée/pannée (Ken Burns, zoompan)
-pendant la durée réelle de l'audio de narration (celle mesurée par ffprobe
-en Phase 2b, jamais ``duration_hint``) + audio muxé -> clip MP4. Les clips
-sont concaténés bout à bout (mêmes paramètres d'encodage sur tous les
-clips -> concat par flux, sans réencodage) puis les sous-titres (SRT de la
-Phase 3a) sont incrustés ("burned-in", police système DejaVu Sans — aucun
-fichier binaire supplémentaire à versionner).
+1. **Mouvement réel** — quand ``assets/img/scene_XX_motion.jpg`` existe
+   (générée depuis ``motion_prompt``, voir steps/images.py), la scène n'est
+   plus une seule photo zoomée : deux images-clés (départ / un instant plus
+   tard) sont fondues l'une dans l'autre, avec une caméra qui zoome et
+   panote. Le contenu bouge donc réellement (personnage, eau, fumée...), au
+   lieu d'un simple effet Ken Burns sur une image figée.
+2. **Un seul encodage** — les sous-titres sont incrustés directement dans
+   chaque clip de scène (SRT découpé par scène), puis les clips sont
+   concaténés avec ``-c copy``. L'ancienne version réencodait toute la
+   vidéo une seconde fois pour les sous-titres : on supprime donc une
+   passe d'encodage complète (plus rapide, et pas de perte de qualité
+   cumulée).
 
 Appelable seul :
     uv run python -m storygen.steps.montage work/{slug}/story.json --format 9:16
@@ -25,33 +24,48 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import tempfile
 from pathlib import Path
 
 from storygen import config
 from storygen.models import Story
-from storygen.steps.images import FORMAT_DIMENSIONS
+from storygen.steps.images import FORMAT_DIMENSIONS, MIN_IMAGE_SIZE
 from storygen.utils.cache import is_fresh
 from storygen.utils.ffmpeg import FfmpegError, probe_duration, run_ffmpeg
 
 logger = logging.getLogger("storygen.montage")
 
-FPS = 25
-ZOOM_MAX = 1.15  # zoom-in subtil et constant sur toute la durée du clip
-# Pré-agrandissement avant zoompan : les images reçues (voir constat plus
-# haut) sont plus petites que la résolution de sortie visée, et zoompan sur
-# une image de petite taille tremble visiblement (quantification interne au
-# pixel) — un facteur 2 avant le zoom/pan lisse largement ce défaut, au prix
-# de plus de RAM/CPU pour ffmpeg (surchargeable via STORYGEN_MONTAGE_UPSCALE,
-# voir config.py — un OOM a été constaté sur Render free avec facteur 2).
+FPS = config.MONTAGE_FPS
+ZOOM_MAX = 1.15  # amplitude du zoom Ken Burns
+# Pré-agrandissement avant zoompan : les images reçues (voir constat dans
+# steps/images.py) sont plus petites que la résolution de sortie visée, et
+# zoompan sur une image de petite taille tremble visiblement. Un facteur 2
+# avant le zoom/pan lisse largement ce défaut (surchargeable via
+# STORYGEN_MONTAGE_UPSCALE ; 1 sur un hébergement à RAM limitée).
 UPSCALE_FACTOR = config.MONTAGE_UPSCALE_FACTOR
 MIN_VIDEO_SIZE = 10_000
+
+# Répartition du fondu entre les deux images d'une scène animée : l'image de
+# départ est tenue ~25% du temps, le fondu dure ~50%, puis l'image d'arrivée
+# est tenue ~25%. Un fondu sur toute la durée donnerait une image fantôme
+# peu lisible ; ce rythme laisse le temps de lire chaque état.
+MOTION_HOLD_RATIO = 0.25
+MOTION_FADE_RATIO = 0.50
+MOTION_MIN_DURATION_S = 0.6
+
+_SRT_TIME_RE = re.compile(
+    r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})"
+)
 
 
 def _escape_filter_path(path: Path) -> str:
     """Échappe un chemin pour l'utiliser comme valeur d'option de filtre
-    ffmpeg (``:`` sépare les options d'un filtre dans sa syntaxe)."""
-    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    ffmpeg (``:`` sépare les options d'un filtre dans sa syntaxe). Les
+    antislashs sont normalisés en ``/`` pour rester valides sous Windows
+    comme sous Linux."""
+    value = str(path).replace("\\", "/")
+    return value.replace(":", "\\:").replace("'", "\\'")
 
 
 def _threads_args() -> list[str]:
@@ -59,34 +73,162 @@ def _threads_args() -> list[str]:
     return ["-threads", str(threads)] if threads > 0 else []
 
 
+def _format_srt_timestamp(seconds: float) -> str:
+    total_ms = round(max(seconds, 0.0) * 1000)
+    hours, rem_ms = divmod(total_ms, 3_600_000)
+    minutes, rem_ms = divmod(rem_ms, 60_000)
+    secs, ms = divmod(rem_ms, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
+
+
+def _parse_srt(text: str) -> list[tuple[float, float, str]]:
+    """Parse un SRT en ``[(début, fin, texte)]`` (timestamps en secondes)."""
+    entries: list[tuple[float, float, str]] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = block.splitlines()
+        if len(lines) < 3:
+            continue
+        match = _SRT_TIME_RE.search("\n".join(lines[:2]))
+        if match is None:
+            continue
+        h1, m1, s1, ms1, h2, m2, s2, ms2 = (int(g) for g in match.groups())
+        start = h1 * 3600 + m1 * 60 + s1 + ms1 / 1000
+        end = h2 * 3600 + m2 * 60 + s2 + ms2 / 1000
+        content = "\n".join(lines[2:]).strip()
+        if content:
+            entries.append((start, end, content))
+    return entries
+
+
+def _scene_entries(
+    entries: list[tuple[float, float, str]], offset: float, duration: float
+) -> list[tuple[float, float, str]]:
+    """Découpe les sous-titres globaux pour ne garder que ceux de la scène,
+    en ramenant leurs timestamps au début du clip (0 = début de la scène)."""
+    scene_end = offset + duration
+    local: list[tuple[float, float, str]] = []
+    for start, end, text in entries:
+        if end <= offset or start >= scene_end:
+            continue
+        local_start = max(start, offset) - offset
+        local_end = min(end, scene_end) - offset
+        if local_end - local_start >= 0.05:
+            local.append((local_start, local_end, text))
+    return local
+
+
+def _write_scene_srt(entries: list[tuple[float, float, str]], path: Path) -> bool:
+    if not entries:
+        return False
+    blocks = [
+        f"{i}\n{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}\n{text}\n"
+        for i, (start, end, text) in enumerate(entries, start=1)
+    ]
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return True
+
+
+def _camera_filter(scene_index: int, frames: int, width: int, height: int) -> str:
+    """Zoompan avec un mouvement de caméra varié (zoom avant/arrière +
+    panoramique) plutôt qu'un zoom centré identique sur toutes les scènes."""
+    step = (ZOOM_MAX - 1.0) / frames
+    if scene_index % 2 == 1:
+        zoom_expr = f"min(1+{step:.8f}*on,{ZOOM_MAX})"
+    else:
+        zoom_expr = f"max({ZOOM_MAX}-{step:.8f}*on,1.0)"
+
+    progress = f"on/{frames}"
+    mode = scene_index % 3
+    if mode == 0:
+        x_expr = f"(iw-iw/zoom)*{progress}"
+        y_expr = "ih/2-(ih/zoom/2)"
+    elif mode == 1:
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = f"(ih-ih/zoom)*{progress}"
+    else:
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
+
+    return (
+        f"zoompan=z='{zoom_expr}':d={frames}:x='{x_expr}':y='{y_expr}':"
+        f"s={width}x{height}:fps={FPS}"
+    )
+
+
+def _subtitle_filter(srt_path: Path, ref_width: int, ref_height: int) -> str:
+    # original_size fixe la résolution de référence utilisée pour interpréter
+    # Fontsize : sans lui, ffmpeg prend une référence interne minuscule et la
+    # police devient disproportionnée dès qu'on change STORYGEN_OUTPUT_SCALE.
+    style = (
+        f"FontName={config.SUBTITLE_FONT},Fontsize=10,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=80"
+    )
+    return (
+        f"subtitles={_escape_filter_path(srt_path)}:"
+        f"original_size={ref_width}x{ref_height}:force_style='{style}'"
+    )
+
+
 def _build_scene_clip(
-    image_path: Path, audio_path: Path, duration: float, width: int, height: int, out_path: Path
+    image_path: Path,
+    audio_path: Path,
+    duration: float,
+    width: int,
+    height: int,
+    ref_width: int,
+    ref_height: int,
+    scene_index: int,
+    out_path: Path,
+    motion_path: Path | None = None,
+    subtitle_path: Path | None = None,
 ) -> None:
-    """Image statique + audio de narration -> clip MP4 avec effet Ken Burns."""
+    """Une scène -> un clip MP4 : deux images fondues (si disponibles) ou
+    zoom Ken Burns, sous-titres incrustés, audio muxé."""
     upscale_w, upscale_h = width * UPSCALE_FACTOR, height * UPSCALE_FACTOR
     frames = max(round(duration * FPS), 1)
-    zoom_step = (ZOOM_MAX - 1.0) / frames
-    filter_complex = (
-        f"[0:v]scale={upscale_w}:{upscale_h}:flags=lanczos,"
-        f"zoompan=z='min(zoom+{zoom_step:.8f},{ZOOM_MAX})':d={frames}:"
-        "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"s={width}x{height}:fps={FPS},"
-        # Pollinations plafonne la source à ~576x1024 (voir constat plus
-        # haut) quelle que soit la résolution demandée : le Ken Burns
-        # agrandit donc toujours une image relativement petite, ce qui
-        # adoucit les détails. Un unsharp léger sur la luminance compense
-        # ce flou sans créer d'artefacts visibles (testé sur un ciel en
-        # dégradé et une texture fine — aucun halo, aucune bande de couleur).
-        "unsharp=5:5:0.9:5:5:0.0[v]"
+    camera = _camera_filter(scene_index, frames, width, height)
+    base = f"scale={upscale_w}:{upscale_h}:flags=lanczos,setsar=1,{camera}"
+
+    # Léger renforcement de netteté (compense l'agrandissement d'une source
+    # plus petite) + micro-étalonnage pour des couleurs un peu plus riches.
+    post = "unsharp=5:5:0.8:5:5:0.0,eq=contrast=1.03:saturation=1.05"
+    if subtitle_path is not None:
+        post += "," + _subtitle_filter(subtitle_path, ref_width, ref_height)
+    post += ",format=yuv420p"
+
+    animated = (
+        motion_path is not None
+        and config.ANIMATE_SCENES
+        and duration >= MOTION_MIN_DURATION_S
     )
+    if animated:
+        offset = duration * MOTION_HOLD_RATIO
+        fade = min(duration * MOTION_FADE_RATIO, duration - offset - 0.05)
+        filter_complex = (
+            f"[0:v]{base}[a];"
+            f"[1:v]{base}[b];"
+            f"[a][b]xfade=transition=fade:duration={fade:.3f}:offset={offset:.3f},"
+            f"{post}[v]"
+        )
+        inputs = ["-i", str(image_path), "-i", str(motion_path), "-i", str(audio_path)]
+        audio_map = "2:a"
+        logger.info(
+            "Scène %d : mouvement réel (%.1fs, fondu %.1fs)...", scene_index, duration, fade
+        )
+    else:
+        filter_complex = f"[0:v]{base},{post}[v]"
+        inputs = ["-i", str(image_path), "-i", str(audio_path)]
+        audio_map = "1:a"
+        logger.info("Scène %d : Ken Burns (%.1fs)...", scene_index, duration)
+
     run_ffmpeg([
-        "-loop", "1", "-i", str(image_path),
-        "-i", str(audio_path),
+        *inputs,
         "-filter_complex", filter_complex,
-        "-map", "[v]", "-map", "1:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(config.MONTAGE_CRF), "-pix_fmt", "yuv420p",
+        "-map", "[v]", "-map", audio_map,
+        "-c:v", "libx264", "-preset", config.MONTAGE_PRESET, "-crf", str(config.MONTAGE_CRF),
+        "-r", str(FPS), "-pix_fmt", "yuv420p",
         *_threads_args(),
-        "-c:a", "aac", "-b:a", "96k",
+        "-c:a", "aac", "-b:a", config.MONTAGE_AUDIO_BITRATE,
         "-t", f"{duration:.3f}", "-shortest",
         str(out_path),
     ])
@@ -97,31 +239,12 @@ def _concat_clips(clip_paths: list[Path], out_path: Path, tmp_dir: Path) -> None
     réencoder (``-c copy``) — cf. ``_build_scene_clip`` qui garantit ça."""
     list_file = tmp_dir / "concat_list.txt"
     list_file.write_text(
-        "\n".join(f"file '{p.resolve()}'" for p in clip_paths), encoding="utf-8"
+        "\n".join(f"file '{str(p.resolve()).replace(chr(92), '/')}'" for p in clip_paths),
+        encoding="utf-8",
     )
-    run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(out_path)])
-
-
-def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path, ref_width: int, ref_height: int) -> None:
-    # Constat réel : sans ``original_size``, le filtre "subtitles" applique
-    # une résolution de référence interne minuscule (proche de l'ancien
-    # défaut ASS 384x288) pour interpréter Fontsize — la taille de police
-    # explose alors proportionnellement dès qu'on réduit la résolution de
-    # sortie (ex. STORYGEN_OUTPUT_SCALE). Fixer original_size sur la
-    # résolution de référence du format (avant mise à l'échelle) rend
-    # Fontsize stable quel que soit STORYGEN_OUTPUT_SCALE.
-    style = (
-        f"FontName={config.SUBTITLE_FONT},Fontsize=10,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=80"
-    )
-    vf = f"subtitles={_escape_filter_path(srt_path)}:original_size={ref_width}x{ref_height}:force_style='{style}'"
     run_ffmpeg([
-        "-i", str(video_path),
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(config.MONTAGE_CRF), "-pix_fmt", "yuv420p",
-        *_threads_args(),
-        "-c:a", "copy",
-        str(out_path),
+        "-f", "concat", "-safe", "0", "-i", str(list_file),
+        "-c", "copy", "-movflags", "+faststart", str(out_path),
     ])
 
 
@@ -152,13 +275,16 @@ def generate_montage(
     img_dir = story_dir / "assets" / "img"
     audio_dir = story_dir / "assets" / "audio"
     total = len(story.scenes)
+    srt_entries = _parse_srt(srt_path.read_text(encoding="utf-8"))
 
     with tempfile.TemporaryDirectory(prefix="storygen_montage_") as tmp:
         tmp_dir = Path(tmp)
         clip_paths: list[Path] = []
+        offset = 0.0
         for i, scene in enumerate(story.scenes, start=1):
             image_path = img_dir / f"scene_{scene.index:02d}.jpg"
             audio_path = audio_dir / f"scene_{scene.index:02d}.mp3"
+            motion_path = img_dir / f"scene_{scene.index:02d}_motion.jpg"
             if not image_path.is_file() or not audio_path.is_file():
                 raise FileNotFoundError(
                     f"Assets manquants pour la scène {scene.index} (image ou audio) — "
@@ -168,18 +294,36 @@ def generate_montage(
             if duration is None:
                 raise ValueError(f"Durée réelle manquante pour la scène {scene.index}.")
 
+            motion_for_scene: Path | None = (
+                motion_path if is_fresh(motion_path, min_size=MIN_IMAGE_SIZE) else None
+            )
+
+            scene_srt = tmp_dir / f"scene_{scene.index:02d}.srt"
+            has_subs = _write_scene_srt(
+                _scene_entries(srt_entries, offset, duration), scene_srt
+            )
+
             clip_path = tmp_dir / f"scene_{scene.index:02d}.mp4"
-            logger.info("Scène %d/%d : rendu Ken Burns (%.1fs)...", i, total, duration)
-            _build_scene_clip(image_path, audio_path, duration, width, height, clip_path)
+            logger.info("Scène %d/%d : rendu (%.1fs)...", i, total, duration)
+            _build_scene_clip(
+                image_path=image_path,
+                audio_path=audio_path,
+                duration=duration,
+                width=width,
+                height=height,
+                ref_width=base_width,
+                ref_height=base_height,
+                scene_index=scene.index,
+                out_path=clip_path,
+                motion_path=motion_for_scene,
+                subtitle_path=scene_srt if has_subs else None,
+            )
             clip_paths.append(clip_path)
+            offset += duration
 
-        concat_path = tmp_dir / "concat.mp4"
-        logger.info("Concaténation de %d clip(s)...", len(clip_paths))
-        _concat_clips(clip_paths, concat_path, tmp_dir)
-
-        logger.info("Incrustation des sous-titres...")
+        logger.info("Concaténation de %d clip(s) (sans réencodage)...", len(clip_paths))
         try:
-            _burn_subtitles(concat_path, srt_path, final_path, base_width, base_height)
+            _concat_clips(clip_paths, final_path, tmp_dir)
         except FfmpegError:
             final_path.unlink(missing_ok=True)
             raise

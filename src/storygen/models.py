@@ -44,11 +44,19 @@ class Character(BaseModel):
 
 
 class Scene(BaseModel):
-    """Une scène = un plan narré, une image, un extrait audio."""
+    """Une scène = un plan narré, une image, un extrait audio.
+
+    ``motion_prompt`` est optionnel (rétro-compatible avec les anciens
+    ``story.json``) : il décrit la même scène un instant plus tard, avec un
+    mouvement visible. ``steps/images.py`` génère alors une seconde image
+    et ``steps/montage.py`` fond de l'une à l'autre — c'est ce qui donne un
+    vrai mouvement de contenu plutôt qu'un simple zoom sur une photo figée.
+    """
 
     index: int = Field(..., ge=1)
     narration: str = Field(..., min_length=1)
     image_prompt: str = Field(..., min_length=1)
+    motion_prompt: str | None = Field(default=None)
     characters_present: list[str] = Field(default_factory=list)
     duration_hint: float = Field(..., gt=0)
 

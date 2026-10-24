@@ -47,7 +47,7 @@ STEP_LABELS: dict[JobStatus, str] = {
     "images": "Génération des images...",
     "voice": "Synthèse de la voix off...",
     "subtitles": "Transcription des sous-titres...",
-    "montage": "Montage final (Ken Burns + encodage)...",
+    "montage": "Montage final (mouvement + encodage)...",
     "done": "Terminé.",
     "error": "Échec.",
 }

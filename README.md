@@ -27,11 +27,31 @@ Aucun service payant : [OpenRouter](https://openrouter.ai/) (modèles `:free`),
 - **Le modèle faster-whisper `small` (~500 Mo) se télécharge depuis Hugging Face au premier lancement** (aucune clé requise, mais peut prendre plusieurs minutes selon la connexion) — normal une seule fois, mis en cache ensuite dans `~/.cache/huggingface`.
 - Limite connue (candidate Phase 4) : un segment whisper correspondant à une phrase longue peut se retrouver découpé en 3-4 lignes de sous-titres affichées en même temps — lisible, mais pas idéal visuellement. Un vrai découpage par groupes de mots avec timing (`word_timestamps=True`) donnerait un rendu plus proche des standards (2 lignes max, incrustées progressivement).
 - **Le filtre `subtitles` de ffmpeg utilise une résolution de référence interne minuscule par défaut** pour interpréter `Fontsize` — sans le paramètre `original_size`, la police de sous-titrage devient disproportionnée dès qu'on change la résolution de sortie (constaté : illisiblement grande à 540x960 avec le même réglage qu'à 1080x1920). `steps/montage.py` fixe `original_size` sur la résolution de référence du format pour que la taille reste stable quel que soit `STORYGEN_OUTPUT_SCALE`.
-- **Le CRF par défaut de libx264 (23) vise une qualité quasi sans perte**, donc un fichier plus lourd que nécessaire pour ce contenu (photos fixes + léger zoom, jamais d'action rapide). Testé en conditions réelles sur deux scènes très différentes (ciel en dégradé, verre/bois texturé) : `CRF=30` (`MONTAGE_CRF`/`STORYGEN_MONTAGE_CRF`) est visuellement identique à 23 sur les deux, pour ~50% de poids en moins (ex. 6,9 Mo → 3,3 Mo sur une vidéo de 55s) — plus rapide à partager sur TikTok/YouTube.
+- **Qualité d'encodage** : le montage utilise désormais `CRF=20` par défaut (au lieu de 30), 30 fps et un léger étalonnage (`eq`)/renforcement de netteté (`unsharp`). Réglable via `STORYGEN_MONTAGE_CRF`, `STORYGEN_MONTAGE_FPS`, `STORYGEN_MONTAGE_PRESET` (voir « Réglages qualité / vitesse »).
 - **Pollinations renvoie un 500 (pas une erreur propre) dès que `seed` dépasse un entier signé 32 bits** (`2147483647`) — isolé en testant le même prompt/résolution avec différents seeds : `seed=2147483647` → 200, `seed=2147483648` → 500, systématiquement. Un modèle `:free` a produit `3081976424` (10 chiffres), faisant échouer toute la génération d'images de l'histoire. `models.StyleBible` ramène désormais tout seed dans l'intervalle valide (`abs(v) % 2**31`) au lieu de faire confiance au LLM.
 - **`enhance=true` et une résolution demandée bien plus grande n'ont aucun effet** sur Pollinations : la sortie reste plafonnée à 576x1024 pour un format 9:16, quoi qu'on demande. Le seul levier de netteté restant est côté ffmpeg : un `unsharp` léger après le Ken Burns (testé sans artefact sur un ciel en dégradé et une texture fine) compense le flou de l'agrandissement d'une source de petite taille.
 - Sous-titres encore réduits (`Fontsize=10`, était 14) suite à un retour utilisateur — la taille précédente restait trop imposante à l'écran, surtout combinée à un segment whisper long découpé en plusieurs lignes.
 - **Un 429 (Too Many Requests) de Pollinations ne se dissipe pas avec un backoff court** (1s/2s/4s) — constaté sous usage soutenu. `utils/http.py` attend beaucoup plus longtemps pour un 429 spécifiquement (10s/20s/30s/40s, ou `Retry-After` si fourni).
+- **Mouvement réel des images** : chaque scène a maintenant deux images-clés (`scene_XX.jpg` + `scene_XX_motion.jpg`) générées depuis `image_prompt` et `motion_prompt` (le LLM décrit le même plan un instant plus tard). Le montage les fond avec une caméra qui zoome et panote : le contenu bouge (geste, eau, fumée) au lieu d'être une photo figée. Si l'image de mouvement échoue, la scène retombe automatiquement sur le Ken Burns statique.
+- **Génération plus rapide** : les images Pollinations sont téléchargées en parallèle (`STORYGEN_IMAGE_CONCURRENCY`, 3 par défaut) avec un décalage anti-rafale, et les sous-titres sont incrustés dans le même encodage que les clips de scène — l'ancienne seconde passe d'encodage de toute la vidéo a été supprimée (plus rapide, pas de perte de qualité cumulée).
+
+## Réglages qualité / vitesse
+
+Tout se pilote par variables d'environnement (ou dans `.env`, chargé avant
+les constantes de `config.py`) :
+
+| Variable | Défaut | Effet |
+|---|---|---|
+| `STORYGEN_ANIMATE` | `1` | Anime chaque scène (deux images fondues). `0` = images fixes (Ken Burns seul), pour un hébergement très limité. |
+| `STORYGEN_IMAGE_CONCURRENCY` | `3` | Nombre d'images Pollinations téléchargées en parallèle. `1` = séquentiel. |
+| `STORYGEN_IMAGE_STAGGER` | `0.6` | Pause (s) entre deux soumissions, pour éviter les 429. |
+| `STORYGEN_MONTAGE_CRF` | `20` | Qualité libx264 : plus bas = plus net et plus lourd (18 = très haute, 23-26 = léger). |
+| `STORYGEN_MONTAGE_FPS` | `30` | Fluidité du mouvement. |
+| `STORYGEN_MONTAGE_PRESET` | `veryfast` | Vitesse/compression x264 (`ultrafast` … `slow`). |
+| `STORYGEN_MONTAGE_AUDIO_BITRATE` | `128k` | Débit audio AAC. |
+| `STORYGEN_MONTAGE_UPSCALE` | `2` | Pré-agrandissement avant Ken Burns (2 = zoom plus fluide, plus de RAM/CPU ; 1 sur Render free). |
+| `STORYGEN_OUTPUT_SCALE` | `1.0` | Échelle de la résolution finale (`0.5` sur Render free). |
+| `STORYGEN_FFMPEG_THREADS` | `0` | Cap des threads ffmpeg (`0` = auto). |
 
 ## Installation
 
@@ -172,7 +192,7 @@ storygen/
       images.py         # Phase 2 : images (Pollinations)
       voice.py            # Phase 2 : voix off (edge-tts)
       subtitles.py          # Phase 3a : sous-titres (faster-whisper)
-      montage.py               # Phase 3b : montage final (ffmpeg, Ken Burns)
+      montage.py               # Phase 3b : montage final (ffmpeg, mouvement + sous-titres)
     utils/
       cache.py          # slug, cache disque
       http.py            # client HTTP stdlib (GET/POST JSON, download+retry, User-Agent)
