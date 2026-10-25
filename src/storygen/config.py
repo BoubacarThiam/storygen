@@ -135,7 +135,13 @@ MONTAGE_FFMPEG_THREADS = int(os.environ.get("STORYGEN_FFMPEG_THREADS", "0"))
 SUBTITLE_FONT = "DejaVu Sans"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt"
+# Pollinations : l'ancienne URL anonyme (image.pollinations.ai) nécessite
+# de plus en plus souvent une clé depuis enter.pollinations.ai (gratuit).
+# Surchargeable via STORYGEN_POLLINATIONS_BASE_URL / STORYGEN_POLLINATIONS_API_KEY.
+POLLINATIONS_BASE_URL = os.environ.get(
+    "STORYGEN_POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt"
+)
+POLLINATIONS_API_KEY = os.environ.get("STORYGEN_POLLINATIONS_API_KEY", "").strip()
 
 
 def get_openrouter_api_key() -> str:

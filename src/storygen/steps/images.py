@@ -104,10 +104,14 @@ def build_full_image_prompt(
 
 def build_pollinations_url(prompt: str, seed: int, width: int, height: int, model: str = "flux") -> str:
     encoded = urllib.parse.quote(prompt, safe="")
-    return (
+    url = (
         f"{config.POLLINATIONS_BASE_URL}/{encoded}"
         f"?width={width}&height={height}&model={model}&nologo=true&seed={seed}"
     )
+    key = getattr(config, "POLLINATIONS_API_KEY", "")
+    if key:
+        url = f"{url}&key={urllib.parse.quote(key, safe='')}"
+    return url
 
 
 def _is_valid_image(data: bytes) -> bool:
@@ -120,7 +124,11 @@ def _download_one(url: str, target: Path, scene_index: int, label: str) -> None:
     # retries=5 : un 429 attend 10s/20s/30s/40s entre les tentatives (voir
     # utils/http._backoff_seconds), donc plus d'essais donne une vraie chance
     # de voir la limite se lever.
-    data = download_binary(url, timeout=90.0, retries=5, validate=_is_valid_image)
+    headers: dict[str, str] = {}
+    key = getattr(config, "POLLINATIONS_API_KEY", "")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    data = download_binary(url, timeout=90.0, retries=5, validate=_is_valid_image, headers=headers)
     target.write_bytes(data)
     logger.info("-> %s (%.0f Ko)", target, len(data) / 1024)
 

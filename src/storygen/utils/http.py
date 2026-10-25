@@ -88,6 +88,7 @@ def download_binary(
     timeout: float = 60.0,
     retries: int = 3,
     validate: Callable[[bytes], bool] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> bytes:
     """Téléchargement avec retry (utilisé par steps/images.py) : backoff
     exponentiel (1s/2s/4s...) pour une erreur réseau ordinaire, backoff bien
@@ -97,9 +98,10 @@ def download_binary(
     autres. Vérifie aussi que la taille reçue correspond à Content-Length
     quand l'en-tête est présent, pour détecter un flux tronqué."""
     last_error: Exception | None = None
+    extra_headers = headers or {}
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers=_with_default_ua(None), method="GET")
+            req = urllib.request.Request(url, headers=_with_default_ua(extra_headers), method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = resp.read()
                 content_length = resp.headers.get("Content-Length")
