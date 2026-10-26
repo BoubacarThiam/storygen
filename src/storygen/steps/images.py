@@ -104,8 +104,11 @@ def build_full_image_prompt(
 
 def build_pollinations_url(prompt: str, seed: int, width: int, height: int, model: str = "flux") -> str:
     encoded = urllib.parse.quote(prompt, safe="")
+    base = config.POLLINATIONS_BASE_URL.rstrip("/")
+    # gen.pollinations.ai/image attend le prompt dans l'URL path.
+    # image.pollinations.ai/prompt fait de même.
     url = (
-        f"{config.POLLINATIONS_BASE_URL}/{encoded}"
+        f"{base}/{encoded}"
         f"?width={width}&height={height}&model={model}&nologo=true&seed={seed}"
     )
     key = getattr(config, "POLLINATIONS_API_KEY", "")
@@ -128,6 +131,7 @@ def _download_one(url: str, target: Path, scene_index: int, label: str) -> None:
     key = getattr(config, "POLLINATIONS_API_KEY", "")
     if key:
         headers["Authorization"] = f"Bearer {key}"
+        headers["x-api-key"] = key
     data = download_binary(url, timeout=90.0, retries=5, validate=_is_valid_image, headers=headers)
     target.write_bytes(data)
     logger.info("-> %s (%.0f Ko)", target, len(data) / 1024)
