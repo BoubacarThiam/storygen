@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import unittest
 import urllib.parse
+from unittest.mock import patch
 
+from storygen import config
 from storygen.models import Story
 from storygen.steps.images import (
     _dimensions_for_format,
+    _is_anonymous_pollinations,
     _is_valid_image,
     build_full_image_prompt,
     build_pollinations_url,
@@ -78,6 +81,34 @@ class TestBuildPollinationsUrl(unittest.TestCase):
         self.assertIn("height=200", url)
         self.assertIn("nologo=true", url)
         self.assertIn("model=flux", url)
+
+    def test_api_key_never_appears_in_url(self) -> None:
+        # La clé part dans l'en-tête Authorization : la mettre dans l'URL la
+        # ferait fuiter dans les logs et les messages d'erreur.
+        with patch.object(config, "POLLINATIONS_API_KEY", "sk-secret"):
+            url = build_pollinations_url("a boat", seed=1, width=10, height=10)
+        self.assertNotIn("sk-secret", url)
+        self.assertNotIn("key=", url)
+
+
+class TestAnonymousPollinations(unittest.TestCase):
+    def test_anonymous_without_key_on_classic_endpoint(self) -> None:
+        with patch.object(config, "POLLINATIONS_API_KEY", ""), patch.object(
+            config, "POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt"
+        ):
+            self.assertTrue(_is_anonymous_pollinations())
+
+    def test_not_anonymous_with_key(self) -> None:
+        with patch.object(config, "POLLINATIONS_API_KEY", "sk-x"), patch.object(
+            config, "POLLINATIONS_BASE_URL", "https://gen.pollinations.ai/image"
+        ):
+            self.assertFalse(_is_anonymous_pollinations())
+
+    def test_not_anonymous_on_authenticated_endpoint_without_key(self) -> None:
+        with patch.object(config, "POLLINATIONS_API_KEY", ""), patch.object(
+            config, "POLLINATIONS_BASE_URL", "https://gen.pollinations.ai/image"
+        ):
+            self.assertFalse(_is_anonymous_pollinations())
 
 
 class TestDimensionsForFormat(unittest.TestCase):

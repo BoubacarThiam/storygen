@@ -31,9 +31,10 @@ Aucun service payant : [OpenRouter](https://openrouter.ai/) (modèles `:free`),
 - **Pollinations renvoie un 500 (pas une erreur propre) dès que `seed` dépasse un entier signé 32 bits** (`2147483647`) — isolé en testant le même prompt/résolution avec différents seeds : `seed=2147483647` → 200, `seed=2147483648` → 500, systématiquement. Un modèle `:free` a produit `3081976424` (10 chiffres), faisant échouer toute la génération d'images de l'histoire. `models.StyleBible` ramène désormais tout seed dans l'intervalle valide (`abs(v) % 2**31`) au lieu de faire confiance au LLM.
 - **`enhance=true` et une résolution demandée bien plus grande n'ont aucun effet** sur Pollinations : la sortie reste plafonnée à 576x1024 pour un format 9:16, quoi qu'on demande. Le seul levier de netteté restant est côté ffmpeg : un `unsharp` léger après le Ken Burns (testé sans artefact sur un ciel en dégradé et une texture fine) compense le flou de l'agrandissement d'une source de petite taille.
 - Sous-titres encore réduits (`Fontsize=10`, était 14) suite à un retour utilisateur — la taille précédente restait trop imposante à l'écran, surtout combinée à un segment whisper long découpé en plusieurs lignes.
-- **Un 429 (Too Many Requests) de Pollinations ne se dissipe pas avec un backoff court** (1s/2s/4s) — constaté sous usage soutenu. `utils/http.py` attend beaucoup plus longtemps pour un 429 spécifiquement (10s/20s/30s/40s, ou `Retry-After` si fourni).
+- **Un 429 (Too Many Requests) de Pollinations ne se dissipe pas avec un backoff court** (1s/2s/4s) — constaté sous usage soutenu. `utils/http.py` attend beaucoup plus longtemps pour un 429 spécifiquement (45s/60s, ou `Retry-After` si fourni).
+- **Un 402/503 Pollinations n'est pas une erreur de paiement définitive** : l'API Classic anonyme limite à *une image à la fois, au moins 45 s d'intervalle par IP*. Envoyer 3 requêtes concurrentes (l'ancien réglage) épuise la limite et produit `402 Payment Required`. `steps/images.py` sérialise désormais les requêtes sans clé et espace les téléchargements de 45 s ; `utils/http.py` traite 402/503 comme des limites de débit (backoff long) au lieu d'abandonner après 15 s. La clé `STORYGEN_POLLINATIONS_API_KEY` supprime cette limite.
 - **Mouvement réel des images** : chaque scène a maintenant deux images-clés (`scene_XX.jpg` + `scene_XX_motion.jpg`) générées depuis `image_prompt` et `motion_prompt` (le LLM décrit le même plan un instant plus tard). Le montage les fond avec une caméra qui zoome et panote : le contenu bouge (geste, eau, fumée) au lieu d'être une photo figée. Si l'image de mouvement échoue, la scène retombe automatiquement sur le Ken Burns statique.
-- **Génération plus rapide** : les images Pollinations sont téléchargées en parallèle (`STORYGEN_IMAGE_CONCURRENCY`, 3 par défaut) avec un décalage anti-rafale, et les sous-titres sont incrustés dans le même encodage que les clips de scène — l'ancienne seconde passe d'encodage de toute la vidéo a été supprimée (plus rapide, pas de perte de qualité cumulée).
+- **Génération plus rapide avec une clé Pollinations** : les images sont téléchargées en parallèle (`STORYGEN_IMAGE_CONCURRENCY`, 3 par défaut) avec un décalage anti-rafale, et les sous-titres sont incrustés dans le même encodage que les clips de scène — l'ancienne seconde passe d'encodage de toute la vidéo a été supprimée (plus rapide, pas de perte de qualité cumulée). Sans clé, la concurrence retombe volontairement à 1 pour respecter la limite Classic.
 
 ## Réglages qualité / vitesse
 
@@ -43,8 +44,9 @@ les constantes de `config.py`) :
 | Variable | Défaut | Effet |
 |---|---|---|
 | `STORYGEN_ANIMATE` | `1` | Anime chaque scène (deux images fondues). `0` = images fixes (Ken Burns seul), pour un hébergement très limité. |
-| `STORYGEN_IMAGE_CONCURRENCY` | `3` | Nombre d'images Pollinations téléchargées en parallèle. `1` = séquentiel. |
+| `STORYGEN_IMAGE_CONCURRENCY` | `3` | Nombre d'images Pollinations téléchargées en parallèle **avec une clé API**. Sans clé, forcé à `1` (limite Classic). |
 | `STORYGEN_IMAGE_STAGGER` | `0.6` | Pause (s) entre deux soumissions, pour éviter les 429. |
+| `STORYGEN_IMAGE_ANONYMOUS_INTERVAL` | `45` | Sans clé Pollinations : intervalle minimal (s) entre deux images (limite officielle de l'API Classic). |
 | `STORYGEN_MONTAGE_CRF` | `20` | Qualité libx264 : plus bas = plus net et plus lourd (18 = très haute, 23-26 = léger). |
 | `STORYGEN_MONTAGE_FPS` | `30` | Fluidité du mouvement. |
 | `STORYGEN_MONTAGE_PRESET` | `veryfast` | Vitesse/compression x264 (`ultrafast` … `slow`). |
@@ -71,6 +73,23 @@ Les modèles utilisés se terminent par `:free` — quota limité mais aucun
 paiement possible par erreur. StoryGen découvre automatiquement la liste des
 modèles `:free` disponibles au runtime et bascule sur le suivant en cas
 d'indisponibilité.
+
+### Clé Pollinations pour les images (recommandée)
+
+Sans clé, StoryGen utilise l'API Classic anonyme : **une image à la fois,
+au moins 45 s d'intervalle par IP**. C'est gratuit mais très lent pour une
+vidéo complète, et c'est la cause des erreurs `402`/`503` quand plusieurs
+requêtes partent ensemble.
+
+Avec une clé (gratuite via les Quests), StoryGen utilise
+`gen.pollinations.ai` et retrouve la génération parallèle :
+
+1. Crée un compte sur https://enter.pollinations.ai/
+2. Va dans **Keys** (https://enter.pollinations.ai/keys) → crée une clé
+3. Renseigne-la dans `.env` : `STORYGEN_POLLINATIONS_API_KEY=sk_...`
+
+À défaut, `STORYGEN_ANIMATE=0` divise par deux le nombre d'images (une seule
+image par scène) et donc le temps d'attente sans clé.
 
 ## Utilisation
 

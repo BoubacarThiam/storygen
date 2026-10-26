@@ -17,6 +17,11 @@ services:
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
+      # Clé Pollinations gratuite (https://enter.pollinations.ai/keys).
+      # Sans elle, l'API Classic anonyme limite à 1 image/45 s par IP : la
+      # génération reste fonctionnelle mais très lente sur Render.
+      - key: STORYGEN_POLLINATIONS_API_KEY
+        sync: false
       - key: STORYGEN_WHISPER_MODEL
         value: tiny
       - key: STORYGEN_MONTAGE_UPSCALE

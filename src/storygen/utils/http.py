@@ -65,14 +65,25 @@ def post_json(
 # Constat réel (usage intensif de Pollinations pendant les tests) : un 429
 # (Too Many Requests) ne se dissipe pas en 1s/2s/4s — le retry générique
 # abandonnait avant que la limite ne se lève. Un 429 attend donc beaucoup
-# plus longtemps (10s/20s/30s, ou la valeur de l'en-tête Retry-After si
-# fourni) qu'une erreur réseau ordinaire.
-_RATE_LIMIT_BACKOFF_S = 10.0
+# plus longtemps (45s/60s, ou la valeur de l'en-tête Retry-After si fourni)
+# qu'une erreur réseau ordinaire.
+#
+# Pollinations renvoie aussi 402 quand le quota anonyme est atteint (et 503
+# quand l'API Classic est saturée) : ce ne sont pas des erreurs définitives
+# mais des limites de débit. Elles doivent donc attendre aussi longtemps que
+# le 429, sinon les 5 tentatives s'épuisent en quelques secondes.
+_RATE_LIMIT_CODES = frozenset({402, 429, 503})
+_RATE_LIMIT_BACKOFF_S = 45.0
 _RATE_LIMIT_BACKOFF_MAX_S = 60.0
+
+# Erreurs pour lesquelles réessayer ne sert à rien (clé absente/invalide,
+# modèle interdit, URL inconnue) : on échoue tout de suite avec un message
+# actionnable plutôt que d'attendre 5 tentatives.
+_NON_RETRYABLE_CODES = frozenset({401, 403, 404})
 
 
 def _backoff_seconds(error: Exception, attempt: int) -> float:
-    if isinstance(error, urllib.error.HTTPError) and error.code == 429:
+    if isinstance(error, urllib.error.HTTPError) and error.code in _RATE_LIMIT_CODES:
         retry_after = error.headers.get("Retry-After") if error.headers else None
         if retry_after:
             try:
@@ -81,6 +92,25 @@ def _backoff_seconds(error: Exception, attempt: int) -> float:
                 pass
         return min(_RATE_LIMIT_BACKOFF_S * (attempt + 1), _RATE_LIMIT_BACKOFF_MAX_S)
     return float(2**attempt)
+
+
+def _error_hint(error: Exception | None) -> str:
+    """Suffixe actionnable ajouté au message final (sans fuite de clé API :
+    la clé voyage dans un en-tête, jamais dans l'URL loggée)."""
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in (401, 402, 403):
+            return (
+                " — Pollinations exige une clé API (avec du Pollen gratuit via "
+                "les Quests) : renseigne STORYGEN_POLLINATIONS_API_KEY, clé "
+                "créée sur https://enter.pollinations.ai/keys. Sans clé, l'API "
+                "Classic est limitée à 1 image toutes les 45 s par IP."
+            )
+        if error.code == 503:
+            return (
+                " — l'API Pollinations gratuite est saturée ; réessaie plus "
+                "tard ou ajoute STORYGEN_POLLINATIONS_API_KEY."
+            )
+    return ""
 
 
 def download_binary(
@@ -96,10 +126,16 @@ def download_binary(
     fourni et renvoie False (contenu vide/corrompu/page d'erreur déguisée en
     200), le téléchargement est traité comme un échec et retenté comme les
     autres. Vérifie aussi que la taille reçue correspond à Content-Length
-    quand l'en-tête est présent, pour détecter un flux tronqué."""
+    quand l'en-tête est présent, pour détecter un flux tronqué.
+
+    Un 402/429/503 (quota Pollinations) bénéficie d'un backoff long (voir
+    ``_backoff_seconds``) ; un 401/403/404 échoue immédiatement avec une
+    indication de correction (réessayer ne changerait rien)."""
     last_error: Exception | None = None
+    attempts_made = 0
     extra_headers = headers or {}
     for attempt in range(retries):
+        attempts_made = attempt + 1
         try:
             req = urllib.request.Request(url, headers=_with_default_ua(extra_headers), method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -114,6 +150,8 @@ def download_binary(
             return data
         except (urllib.error.URLError, TimeoutError, HttpError) as e:
             last_error = e
+            if isinstance(e, urllib.error.HTTPError) and e.code in _NON_RETRYABLE_CODES:
+                break
             if attempt < retries - 1:
                 wait = _backoff_seconds(e, attempt)
                 logger.warning(
@@ -121,4 +159,6 @@ def download_binary(
                     url, e, wait, attempt + 2, retries,
                 )
                 time.sleep(wait)
-    raise HttpError(f"Échec après {retries} tentatives sur {url} : {last_error}")
+    raise HttpError(
+        f"Échec après {attempts_made} tentative(s) sur {url} : {last_error}{_error_hint(last_error)}"
+    )

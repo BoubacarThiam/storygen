@@ -135,13 +135,30 @@ MONTAGE_FFMPEG_THREADS = int(os.environ.get("STORYGEN_FFMPEG_THREADS", "0"))
 SUBTITLE_FONT = "DejaVu Sans"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# Pollinations : l'endpoint historique image.pollinations.ai/prompt devient
-# de plus en plus souvent restreint (402). On passe par gen.pollinations.ai/image
-# par défaut. Surchargeable via STORYGEN_POLLINATIONS_BASE_URL / STORYGEN_POLLINATIONS_API_KEY.
-POLLINATIONS_BASE_URL = os.environ.get(
-    "STORYGEN_POLLINATIONS_BASE_URL", "https://gen.pollinations.ai/image"
-)
+
+# Pollinations : deux APIs distinctes.
+#   - avec clé  -> gen.pollinations.ai/image (tous les modèles, requêtes parallèles)
+#   - sans clé  -> image.pollinations.ai/prompt (API Classic anonyme, limitée à
+#                  1 image toutes les 45 s par IP, d'où le mode séquentiel forcé
+#                  dans steps/images.py)
+# Choisir gen.pollinations.ai sans clé donne systématiquement un 401, et marteler
+# l'API Classic avec plusieurs requêtes simultanées donne 402/503.
 POLLINATIONS_API_KEY = os.environ.get("STORYGEN_POLLINATIONS_API_KEY", "").strip()
+_DEFAULT_POLLINATIONS_BASE_URL = (
+    "https://gen.pollinations.ai/image"
+    if POLLINATIONS_API_KEY
+    else "https://image.pollinations.ai/prompt"
+)
+POLLINATIONS_BASE_URL = os.environ.get(
+    "STORYGEN_POLLINATIONS_BASE_URL", _DEFAULT_POLLINATIONS_BASE_URL
+).rstrip("/")
+
+# Espacement minimal (secondes) entre deux images sur l'API Classic anonyme.
+# La documentation Pollinations impose "une image à la fois, au moins 45 s
+# d'intervalle" par IP ; 45 s est conservé comme plancher.
+POLLINATIONS_ANONYMOUS_MIN_INTERVAL_S = max(
+    0.0, float(os.environ.get("STORYGEN_IMAGE_ANONYMOUS_INTERVAL", "45"))
+)
 
 
 def get_openrouter_api_key() -> str:

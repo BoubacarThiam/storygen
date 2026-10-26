@@ -34,6 +34,16 @@ class TestBackoffSeconds(unittest.TestCase):
         self.assertGreaterEqual(_backoff_seconds(error, 0), 10.0)
         self.assertGreater(_backoff_seconds(error, 1), _backoff_seconds(error, 0))
 
+    def test_payment_required_is_treated_as_rate_limit(self) -> None:
+        # Pollinations renvoie 402 quand le quota anonyme (1 image / 45 s) est
+        # dépassé : ce n'est pas une erreur définitive, il faut attendre.
+        error = _http_error(402)
+        self.assertGreaterEqual(_backoff_seconds(error, 0), 45.0)
+
+    def test_service_unavailable_is_treated_as_rate_limit(self) -> None:
+        error = _http_error(503)
+        self.assertGreaterEqual(_backoff_seconds(error, 0), 45.0)
+
     def test_rate_limit_honors_retry_after_header(self) -> None:
         error = _http_error(429, headers={"Retry-After": "5"})
         self.assertEqual(_backoff_seconds(error, 0), 5.0)

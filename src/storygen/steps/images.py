@@ -13,7 +13,14 @@ est générée (``scene_XX_motion.jpg``) à partir de ``motion_prompt``. Le
 montage fond de l'une à l'autre pour donner un vrai mouvement de contenu,
 plutôt qu'un simple zoom Ken Burns sur une photo figée. Les deux images
 sont générées en parallèle (``STORYGEN_IMAGE_CONCURRENCY``) pour rester
-rapide malgré le double d'appels.
+rapide malgré le double d'appels — uniquement quand une clé Pollinations est
+configurée.
+
+Sans clé, Pollinations bascule sur l'API Classic anonyme : une seule image
+à la fois, au moins 45 s d'intervalle par IP. La génération est alors
+volontairement séquentielle et espacée (sinon 402/503) ; c'est lent mais
+fonctionnel. Avec ``STORYGEN_POLLINATIONS_API_KEY``, l'endpoint authentifié
+``gen.pollinations.ai`` est utilisé et la concurrence normale s'applique.
 
 Constat réel important (signalé à l'utilisateur) : contrairement à ce que
 son nom laisse penser, l'endpoint Pollinations renvoie du JPEG
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -107,32 +115,75 @@ def build_pollinations_url(prompt: str, seed: int, width: int, height: int, mode
     base = config.POLLINATIONS_BASE_URL.rstrip("/")
     # gen.pollinations.ai/image attend le prompt dans l'URL path.
     # image.pollinations.ai/prompt fait de même.
-    url = (
+    # La clé API n'est JAMAIS mise dans l'URL : elle finirait dans les logs et
+    # les messages d'erreur. Elle voyage dans l'en-tête Authorization
+    # (voir _download_one).
+    return (
         f"{base}/{encoded}"
         f"?width={width}&height={height}&model={model}&nologo=true&seed={seed}"
     )
-    key = getattr(config, "POLLINATIONS_API_KEY", "")
-    if key:
-        url = f"{url}&key={urllib.parse.quote(key, safe='')}"
-    return url
+
+
+def _is_anonymous_pollinations() -> bool:
+    """Vrai quand on utilise l'API Classic publique (sans clé), soumise à la
+    limite d'une image toutes les 45 s par IP."""
+    return (
+        not config.POLLINATIONS_API_KEY
+        and "image.pollinations.ai" in config.POLLINATIONS_BASE_URL
+    )
+
+
+# Verrou global : la limite Classic est par IP, donc elle s'applique à tous les
+# threads/jobs du process, pas seulement à une scène. On sérialise les
+# téléchargements anonymes et on respecte l'intervalle entre deux requêtes.
+_anonymous_gate = threading.Lock()
+_last_anonymous_download_finished_at = 0.0
 
 
 def _is_valid_image(data: bytes) -> bool:
     return len(data) >= MIN_IMAGE_SIZE and data[:3] == JPEG_MAGIC
 
 
-def _download_one(url: str, target: Path, scene_index: int, label: str) -> None:
+def _download_one(
+    url: str,
+    target: Path,
+    scene_index: int,
+    label: str,
+    min_interval_s: float = 0.0,
+) -> None:
     """Télécharge une image et l'écrit sur disque (exécuté dans un thread)."""
+    global _last_anonymous_download_finished_at
     logger.info("Scène %d : génération %s...", scene_index, label)
-    # retries=5 : un 429 attend 10s/20s/30s/40s entre les tentatives (voir
-    # utils/http._backoff_seconds), donc plus d'essais donne une vraie chance
-    # de voir la limite se lever.
+
     headers: dict[str, str] = {}
-    key = getattr(config, "POLLINATIONS_API_KEY", "")
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-        headers["x-api-key"] = key
-    data = download_binary(url, timeout=90.0, retries=5, validate=_is_valid_image, headers=headers)
+    if config.POLLINATIONS_API_KEY:
+        headers["Authorization"] = f"Bearer {config.POLLINATIONS_API_KEY}"
+
+    def _fetch() -> bytes:
+        # retries=5 : un 402/429/503 attend 45s/60s entre les tentatives (voir
+        # utils/http._backoff_seconds), donc plus d'essais donne une vraie
+        # chance de voir la limite se lever.
+        return download_binary(
+            url, timeout=90.0, retries=5, validate=_is_valid_image, headers=headers
+        )
+
+    if min_interval_s > 0:
+        with _anonymous_gate:
+            wait = _last_anonymous_download_finished_at + min_interval_s - time.monotonic()
+            if wait > 0:
+                logger.info(
+                    "Scène %d : limite Pollinations anonyme — attente de %.0fs "
+                    "avant la prochaine image...",
+                    scene_index, wait,
+                )
+                time.sleep(wait)
+            try:
+                data = _fetch()
+            finally:
+                _last_anonymous_download_finished_at = time.monotonic()
+    else:
+        data = _fetch()
+
     target.write_bytes(data)
     logger.info("-> %s (%.0f Ko)", target, len(data) / 1024)
 
@@ -181,15 +232,30 @@ def generate_images(
                 jobs.append((url, motion, scene.index, "image de mouvement", False))
 
     if jobs:
-        workers = min(config.IMAGE_CONCURRENCY, len(jobs))
+        anonymous = _is_anonymous_pollinations()
+        min_interval = config.POLLINATIONS_ANONYMOUS_MIN_INTERVAL_S if anonymous else 0.0
+        # API Classic anonyme : une seule requête à la fois. Avec une clé,
+        # l'endpoint gen.pollinations.ai supporte la concurrence configurée.
+        workers = min(1 if anonymous else config.IMAGE_CONCURRENCY, len(jobs))
         logger.info(
             "%d image(s) à générer pour %d scène(s) (concurrence : %d)...",
             len(jobs), total, workers,
         )
+        if anonymous:
+            logger.warning(
+                "Aucune clé Pollinations (STORYGEN_POLLINATIONS_API_KEY) : API "
+                "Classic anonyme, une image toutes les %.0fs minimum. La "
+                "génération sera lente ; une clé avec du Pollen gratuit "
+                "(Quests) sur https://enter.pollinations.ai/keys supprime "
+                "cette limite.",
+                min_interval,
+            )
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="storygen-img") as pool:
             future_jobs = {}
             for url, target, scene_index, label, required in jobs:
-                future = pool.submit(_download_one, url, target, scene_index, label)
+                future = pool.submit(
+                    _download_one, url, target, scene_index, label, min_interval
+                )
                 future_jobs[future] = (scene_index, label, required)
                 # Décalage entre soumissions : évite les rafales de 429.
                 if config.IMAGE_STAGGER_S > 0:
