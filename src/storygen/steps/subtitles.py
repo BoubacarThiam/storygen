@@ -10,6 +10,14 @@ timestamps de chaque scène par son offset cumulé dans la timeline finale —
 les scènes étant concaténées bout à bout au montage (Phase 3b) — pour
 produire un seul fichier SRT chronométré sur toute la vidéo.
 
+Chemin rapide (par défaut) : steps/voice.py enregistre le minutage mot à mot
+renvoyé par edge-tts (``scene_XX.words.json``). Les sous-titres en sont
+construits directement — texte exact du scénario, ponctuation comprise, par
+courts groupes de mots — sans charger ni exécuter faster-whisper. Constat
+mesuré : whisper "tiny" met ~30 s à se charger et ~0,2 s de CPU par seconde
+d'audio, soit plusieurs minutes sur le 0,1 CPU de Render free. Whisper ne
+sert plus que de repli pour un MP3 sans minutage.
+
 Appelable seul :
     uv run python -m storygen.steps.subtitles work/{slug}/story.json
 """
@@ -18,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import logging
 from pathlib import Path
 
@@ -26,12 +35,20 @@ from faster_whisper import WhisperModel
 from storygen import config
 from storygen.models import Story
 from storygen.utils.cache import is_fresh
+from storygen.steps.voice import words_path_for
 from storygen.utils.ffmpeg import probe_duration
 
 logger = logging.getLogger("storygen.subtitles")
 
 MAX_LINE_CHARS = 56  # limite le nombre de lignes affichées simultanément (voir constat "limite connue" au README)
 MIN_SRT_SIZE = 10
+
+# Groupement des mots en sous-titres (chemin edge-tts) : courts groupes sur une
+# ligne, coupés en fin de phrase ou sur une pause, plutôt que de longs segments
+# whisper affichés sur 3-4 lignes (voir "limite connue" au README).
+MAX_CUE_CHARS = 42
+CUE_BREAK_PAUSE_S = 0.6
+_CUE_END_PUNCTUATION = (".", "!", "?", "…", ":", ";")
 
 # Chargé une seule fois par process : le modèle "small" (~500 Mo, téléchargé
 # depuis Hugging Face au premier lancement) prend plusieurs secondes à
@@ -94,6 +111,76 @@ def _transcribe_scene(audio_path: Path) -> list[tuple[float, float, str]]:
     return [(seg.start, seg.end, seg.text.strip()) for seg in segments if seg.text.strip()]
 
 
+def _words_with_punctuation(
+    narration: str, words: list[tuple[float, float, str]]
+) -> list[tuple[float, float, str]]:
+    """edge-tts renvoie les mots sans ponctuation : on les retrouve dans la
+    narration pour récupérer le texte exact jusqu'au mot suivant (virgules,
+    points, guillemets...). Un mot introuvable garde son texte brut."""
+    positions: list[int | None] = []
+    cursor = 0
+    for _start, _end, word in words:
+        found = narration.find(word, cursor)
+        positions.append(found if found >= 0 else None)
+        if found >= 0:
+            cursor = found + len(word)
+
+    result: list[tuple[float, float, str]] = []
+    for k, (start, end, word) in enumerate(words):
+        pos = positions[k]
+        text = word
+        if pos is not None:
+            following = [p for p in positions[k + 1:] if p is not None]
+            text = narration[pos : following[0] if following else len(narration)].strip() or word
+        result.append((start, end, text))
+    return result
+
+
+def cues_from_words(
+    narration: str, words: list[tuple[float, float, str]]
+) -> list[tuple[float, float, str]]:
+    """Regroupe le minutage mot à mot en sous-titres ``[(début, fin, texte)]``
+    relatifs au début de la scène."""
+    cues: list[tuple[float, float, str]] = []
+    current: list[tuple[float, float, str]] = []
+
+    def flush() -> None:
+        if current:
+            cues.append((current[0][0], current[-1][1], " ".join(w for _s, _e, w in current)))
+            current.clear()
+
+    for start, end, text in _words_with_punctuation(narration, words):
+        if current:
+            joined = " ".join(w for _s, _e, w in current) + " " + text
+            if len(joined) > MAX_CUE_CHARS or start - current[-1][1] > CUE_BREAK_PAUSE_S:
+                flush()
+        current.append((start, end, text))
+        if text.rstrip("»\"' ").endswith(_CUE_END_PUNCTUATION):
+            flush()
+    flush()
+
+    # Prolonge chaque sous-titre jusqu'au suivant quand l'écart est court :
+    # évite un clignotement entre deux groupes de mots enchaînés.
+    for i in range(len(cues) - 1):
+        start, end, text = cues[i]
+        next_start = cues[i + 1][0]
+        if 0 < next_start - end <= CUE_BREAK_PAUSE_S:
+            cues[i] = (start, next_start, text)
+    return cues
+
+
+def _scene_cues(narration: str, audio_path: Path) -> list[tuple[float, float, str]]:
+    """Sous-titres d'une scène : minutage edge-tts s'il existe, sinon
+    transcription faster-whisper (repli)."""
+    words_path = words_path_for(audio_path)
+    if words_path.is_file():
+        words = [tuple(w) for w in json.loads(words_path.read_text(encoding="utf-8"))]
+        if words:
+            return cues_from_words(narration, words)  # type: ignore[arg-type]
+    logger.info("%s : pas de minutage edge-tts, transcription faster-whisper...", audio_path.name)
+    return _transcribe_scene(audio_path)
+
+
 def build_srt(entries: list[tuple[float, float, str]]) -> str:
     """Construit le contenu d'un fichier SRT à partir d'entrées déjà
     décalées sur la timeline finale."""
@@ -131,8 +218,8 @@ def generate_subtitles(
                 f"Audio manquant pour la scène {scene.index} : {audio_path} "
                 "(lance la Phase 2b avant la Phase 3a)."
             )
-        logger.info("Scène %d/%d : transcription (faster-whisper)...", scene.index, total)
-        for start, end, text in _transcribe_scene(audio_path):
+        logger.info("Scène %d/%d : sous-titres...", scene.index, total)
+        for start, end, text in _scene_cues(scene.narration, audio_path):
             entries.append((offset + start, offset + end, text))
         offset += durations.get(scene.index) or probe_duration(audio_path)
 

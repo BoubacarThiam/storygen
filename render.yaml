@@ -41,11 +41,16 @@ services:
       # Qualité un peu au-dessus de l'ancien CRF 30, sans alourdir à l'excès.
       - key: STORYGEN_MONTAGE_CRF
         value: "23"
+      # Sur 0,1 CPU, l'encodage est l'étape la plus lente. Mesuré sur une scène
+      # de 10 s (540x960, animée) : veryfast/30 fps = 3,1 s de CPU,
+      # ultrafast = 1,8 s (-44 %) ; 25 fps retire encore ~1/6 des images.
       - key: STORYGEN_MONTAGE_FPS
-        value: "30"
-      # Génération d'images parallèle, mais modérée sur 0.1 CPU.
+        value: "25"
+      - key: STORYGEN_MONTAGE_PRESET
+        value: ultrafast
+      # Le téléchargement d'images attend le réseau, pas le CPU : 3 en parallèle.
       - key: STORYGEN_IMAGE_CONCURRENCY
-        value: "2"
+        value: "3"
       - key: STORYGEN_IMAGE_STAGGER
         value: "1.0"
       - key: PYTHONUNBUFFERED

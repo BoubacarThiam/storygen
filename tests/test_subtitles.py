@@ -14,7 +14,13 @@ from pathlib import Path
 
 from storygen.config import DEFAULT_VOICE
 from storygen.models import Story
-from storygen.steps.subtitles import _format_timestamp, build_srt, generate_subtitles, wrap_subtitle_text
+from storygen.steps.subtitles import (
+    _format_timestamp,
+    build_srt,
+    cues_from_words,
+    generate_subtitles,
+    wrap_subtitle_text,
+)
 from storygen.steps.voice import generate_voices
 
 
@@ -67,6 +73,39 @@ STORY = Story.model_validate(
         ],
     }
 )
+
+
+class TestCuesFromWords(unittest.TestCase):
+    NARRATION = "Au petit matin, le pêcheur partit. Une bouteille flottait !"
+    WORDS = [
+        (0.0, 0.2, "Au"), (0.2, 0.5, "petit"), (0.5, 0.9, "matin"),
+        (1.1, 1.2, "le"), (1.2, 1.7, "pêcheur"), (1.7, 2.2, "partit"),
+        (2.8, 3.0, "Une"), (3.0, 3.5, "bouteille"), (3.5, 4.1, "flottait"),
+    ]
+
+    def test_restores_punctuation_and_splits_on_sentence_end(self) -> None:
+        cues = cues_from_words(self.NARRATION, self.WORDS)
+        self.assertEqual(
+            [text for _s, _e, text in cues],
+            ["Au petit matin, le pêcheur partit.", "Une bouteille flottait !"],
+        )
+        self.assertEqual(cues[0][0], 0.0)
+        self.assertEqual(cues[1][1], 4.1)
+
+    def test_splits_long_groups(self) -> None:
+        words = [(i * 0.3, i * 0.3 + 0.25, "mot") for i in range(30)]
+        cues = cues_from_words(" ".join(w for _s, _e, w in words), words)
+        self.assertGreater(len(cues), 1)
+        self.assertTrue(all(len(text) <= 42 for _s, _e, text in cues))
+
+    def test_bridges_short_gap_between_cues(self) -> None:
+        cues = cues_from_words(self.NARRATION, self.WORDS)
+        # 2.2 -> 2.8 : écart de 0.6 s, le premier sous-titre tient jusqu'au suivant.
+        self.assertEqual(cues[0][1], 2.8)
+
+    def test_unknown_word_keeps_raw_text(self) -> None:
+        cues = cues_from_words("Bonjour.", [(0.0, 0.5, "Salut")])
+        self.assertEqual(cues, [(0.0, 0.5, "Salut")])
 
 
 class TestGenerateSubtitlesLive(unittest.TestCase):

@@ -5,12 +5,19 @@ Appelable seul :
 
 La durée réelle du MP3 (mesurée via ffprobe) fait autorité sur
 ``duration_hint`` pour le montage (Phase 3) — cf. master prompt.
+
+edge-tts renvoie aussi, pendant la synthèse, le minutage exact de chaque mot
+(événements ``WordBoundary``). Il est enregistré dans
+``assets/audio/scene_XX.words.json`` : steps/subtitles.py en tire des
+sous-titres parfaitement synchronisés sans avoir à retranscrire l'audio avec
+faster-whisper (lent sur un CPU d'hébergement gratuit, et ~75-500 Mo de RAM).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -32,14 +39,33 @@ MIN_MP3_SIZE = 500  # heuristique : même une narration très courte dépasse la
 # (purement informatif : c'est la durée réelle qui fera foi au montage).
 DURATION_DRIFT_WARN_S = 3.0
 
+# Les offsets/durées des événements WordBoundary sont en unités de 100 ns.
+_TICKS_PER_SECOND = 10_000_000
+
+
+def words_path_for(audio_path: Path) -> Path:
+    """``scene_XX.mp3`` -> ``scene_XX.words.json`` (minutage mot à mot)."""
+    return audio_path.with_suffix(".words.json")
+
 
 async def _synthesize_one(narration: str, voice: str, target: Path, scene_index: int, semaphore: asyncio.Semaphore) -> None:
     async with semaphore:
         last_error: Exception | None = None
         for attempt in range(RETRIES):
             try:
-                communicate = edge_tts.Communicate(narration, voice)
-                await communicate.save(str(target))
+                communicate = edge_tts.Communicate(narration, voice, boundary="WordBoundary")
+                words: list[tuple[float, float, str]] = []
+                with target.open("wb") as audio:
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            audio.write(chunk["data"])
+                        elif chunk["type"] == "WordBoundary":
+                            start = chunk["offset"] / _TICKS_PER_SECOND
+                            end = start + chunk["duration"] / _TICKS_PER_SECOND
+                            words.append((start, end, chunk["text"]))
+                words_path_for(target).write_text(
+                    json.dumps(words, ensure_ascii=False), encoding="utf-8"
+                )
                 return
             except Exception as e:  # edge-tts (non officiel) peut lever divers types d'erreurs réseau
                 last_error = e
@@ -64,7 +90,13 @@ async def _generate_voices_async(
     for scene in story.scenes:
         target = audio_dir / f"scene_{scene.index:02d}.mp3"
         targets[scene.index] = target
-        if not force and is_fresh(target, min_size=MIN_MP3_SIZE):
+        # Un MP3 sans son minutage (généré par une ancienne version) est
+        # resynthétisé : quelques secondes, contre une transcription whisper.
+        if (
+            not force
+            and is_fresh(target, min_size=MIN_MP3_SIZE)
+            and words_path_for(target).is_file()
+        ):
             logger.info("Cache hit : %s", target)
             continue
         tasks.append(_synthesize_one(scene.narration, voice, target, scene.index, semaphore))
