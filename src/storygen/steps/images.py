@@ -198,7 +198,8 @@ def generate_images(
     Retourne les chemins des images principales, dans l'ordre des scènes.
 
     Les images de mouvement (``scene_XX_motion.jpg``) sont générées en plus
-    quand ``config.ANIMATE_SCENES`` est actif. Un échec sur une image de
+    quand ``config.ANIMATE_SCENES`` est actif (et, sans clé Pollinations,
+    seulement si ``config.ANIMATE_ANONYMOUS`` l'est aussi). Un échec sur une image de
     mouvement n'est pas fatal : la scène retombe simplement sur le zoom
     Ken Burns statique au montage."""
     img_dir = story_dir / "assets" / "img"
@@ -207,6 +208,8 @@ def generate_images(
     seed = story.style_bible.seed
     motion_seed = (seed + 1) % (SEED_MAX + 1)
     total = len(story.scenes)
+    anonymous = _is_anonymous_pollinations()
+    animate = config.ANIMATE_SCENES and (not anonymous or config.ANIMATE_ANONYMOUS)
 
     # (url, cible, index de scène, libellé, obligatoire)
     jobs: list[tuple[str, Path, int, str, bool]] = []
@@ -222,8 +225,8 @@ def generate_images(
             url = build_pollinations_url(prompt, seed, width, height)
             jobs.append((url, primary, scene.index, "image", True))
 
-        if config.ANIMATE_SCENES:
-            motion = img_dir / f"scene_{scene.index:02d}_motion.jpg"
+        if animate:
+            motion =img_dir / f"scene_{scene.index:02d}_motion.jpg"
             if not force and is_fresh(motion, min_size=MIN_IMAGE_SIZE):
                 logger.info("Cache hit : %s", motion)
             else:
@@ -231,8 +234,14 @@ def generate_images(
                 url = build_pollinations_url(prompt, motion_seed, width, height)
                 jobs.append((url, motion, scene.index, "image de mouvement", False))
 
+    if config.ANIMATE_SCENES and not animate:
+        logger.info(
+            "Pollinations anonyme : images de mouvement désactivées pour diviser "
+            "le temps de génération par deux (STORYGEN_ANIMATE_ANONYMOUS=1 pour "
+            "les réactiver)."
+        )
+
     if jobs:
-        anonymous = _is_anonymous_pollinations()
         min_interval = config.POLLINATIONS_ANONYMOUS_MIN_INTERVAL_S if anonymous else 0.0
         # API Classic anonyme : une seule requête à la fois. Avec une clé,
         # l'endpoint gen.pollinations.ai supporte la concurrence configurée.

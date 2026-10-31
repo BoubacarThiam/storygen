@@ -31,11 +31,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from storygen import config
-from storygen.steps.images import FORMAT_DIMENSIONS, generate_images
+from storygen.pipeline import generate_media
+from storygen.steps.images import FORMAT_DIMENSIONS
 from storygen.steps.montage import generate_montage
 from storygen.steps.script import generate_story
-from storygen.steps.subtitles import generate_subtitles, unload_model as unload_whisper_model
-from storygen.steps.voice import generate_voices
+from storygen.steps.subtitles import unload_model as unload_whisper_model
 
 logger = logging.getLogger("storygen.webapp")
 
@@ -44,7 +44,7 @@ JobStatus = Literal["queued", "script", "images", "voice", "subtitles", "montage
 STEP_LABELS: dict[JobStatus, str] = {
     "queued": "En attente...",
     "script": "Scénarisation en cours...",
-    "images": "Génération des images...",
+    "images": "Génération des images (voix off en parallèle)...",
     "voice": "Synthèse de la voix off...",
     "subtitles": "Transcription des sous-titres...",
     "montage": "Montage final (mouvement + encodage)...",
@@ -88,14 +88,13 @@ def _run_job(job: Job) -> None:
         job.status = "script"
         story, story_dir = generate_story(job.prompt, duration_s=job.duration)
 
-        job.status = "images"
-        generate_images(story, story_dir, fmt=job.fmt)
+        # Images et voix/sous-titres en parallèle (voir storygen/pipeline.py).
+        def _set_status(step: str) -> None:
+            job.status = step  # type: ignore[assignment]
 
-        job.status = "voice"
-        durations = generate_voices(story, story_dir, voice=job.voice)
-
-        job.status = "subtitles"
-        srt_path = generate_subtitles(story, story_dir, durations)
+        _, durations, srt_path = generate_media(
+            story, story_dir, fmt=job.fmt, voice=job.voice, on_step=_set_status
+        )
         # Libère le modèle whisper avant ffmpeg — sur un hébergement à RAM
         # limitée (ex. Render free, 512 Mo), le garder chargé pendant le
         # montage suffit à déclencher un OOM (constaté en conditions

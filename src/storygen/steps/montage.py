@@ -26,6 +26,7 @@ import argparse
 import logging
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from storygen import config
@@ -280,8 +281,9 @@ def generate_montage(
     with tempfile.TemporaryDirectory(prefix="storygen_montage_") as tmp:
         tmp_dir = Path(tmp)
         clip_paths: list[Path] = []
+        clip_jobs: list[dict] = []
         offset = 0.0
-        for i, scene in enumerate(story.scenes, start=1):
+        for scene in story.scenes:
             image_path = img_dir / f"scene_{scene.index:02d}.jpg"
             audio_path = audio_dir / f"scene_{scene.index:02d}.mp3"
             motion_path = img_dir / f"scene_{scene.index:02d}_motion.jpg"
@@ -304,8 +306,7 @@ def generate_montage(
             )
 
             clip_path = tmp_dir / f"scene_{scene.index:02d}.mp4"
-            logger.info("Scène %d/%d : rendu (%.1fs)...", i, total, duration)
-            _build_scene_clip(
+            clip_jobs.append(dict(
                 image_path=image_path,
                 audio_path=audio_path,
                 duration=duration,
@@ -317,9 +318,19 @@ def generate_montage(
                 out_path=clip_path,
                 motion_path=motion_for_scene,
                 subtitle_path=scene_srt if has_subs else None,
-            )
+            ))
             clip_paths.append(clip_path)
             offset += duration
+
+        # Les clips sont indépendants : on les encode en parallèle (zoompan
+        # étant mono-thread, c'est le principal gain de temps du montage).
+        # L'ordre final est garanti par clip_paths, pas par l'ordre de fin.
+        workers = min(config.MONTAGE_CONCURRENCY, len(clip_jobs))
+        logger.info("Rendu de %d scène(s) (concurrence : %d)...", total, workers)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="storygen-clip") as pool:
+            futures = [pool.submit(_build_scene_clip, **job) for job in clip_jobs]
+            for future in as_completed(futures):
+                future.result()
 
         logger.info("Concaténation de %d clip(s) (sans réencodage)...", len(clip_paths))
         try:

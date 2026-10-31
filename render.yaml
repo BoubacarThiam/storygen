@@ -30,6 +30,10 @@ services:
         value: "0.5"
       - key: STORYGEN_FFMPEG_THREADS
         value: "2"
+      # Un seul encodage de scène à la fois : plusieurs ffmpeg simultanés
+      # dépasseraient les 512 Mo du plan gratuit.
+      - key: STORYGEN_MONTAGE_CONCURRENCY
+        value: "1"
       # Anime chaque scène (deux images fondues). Mettre "0" si le plan
       # gratuit manque de CPU.
       - key: STORYGEN_ANIMATE

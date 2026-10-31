@@ -85,6 +85,12 @@ IMAGE_STAGGER_S = max(0.0, float(os.environ.get("STORYGEN_IMAGE_STAGGER", "0.6")
 # à des images fixes (utile sur un hébergement très limité en CPU/RAM).
 ANIMATE_SCENES = _env_bool("STORYGEN_ANIMATE", True)
 
+# Sans clé Pollinations (API Classic anonyme, 1 image / 45 s), l'animation
+# double le nombre d'images et donc le temps d'attente (~15 min d'images pour
+# 10 scènes). Elle y est donc désactivée par défaut : les scènes retombent sur
+# le Ken Burns. Mettre 1 pour animer quand même, au prix de la lenteur.
+ANIMATE_ANONYMOUS = _env_bool("STORYGEN_ANIMATE_ANONYMOUS", False)
+
 # ---------------------------------------------------------------------------
 # Montage (steps/montage.py)
 # ---------------------------------------------------------------------------
@@ -129,6 +135,17 @@ MONTAGE_AUDIO_BITRATE = os.environ.get("STORYGEN_MONTAGE_AUDIO_BITRATE", "128k")
 # inférieur (ex. Render free, "0.1 CPU") — un cap explicite réduit la
 # mémoire de pointe sans changer la qualité de sortie.
 MONTAGE_FFMPEG_THREADS = int(os.environ.get("STORYGEN_FFMPEG_THREADS", "0"))
+
+# Nombre de clips de scène encodés simultanément (steps/montage.py). zoompan
+# est mono-thread : plusieurs ffmpeg en parallèle exploitent bien mieux un CPU
+# multi-cœurs qu'un seul. Chaque process ajoute sa propre mémoire, d'où 1 sur
+# un hébergement à RAM limitée (render.yaml).
+MONTAGE_CONCURRENCY = max(
+    1,
+    int(os.environ.get(
+        "STORYGEN_MONTAGE_CONCURRENCY", str(min(4, max(1, (os.cpu_count() or 2) // 2)))
+    )),
+)
 
 # Choix validé avec l'utilisateur : police système déjà présente, zéro
 # fichier binaire supplémentaire à versionner.

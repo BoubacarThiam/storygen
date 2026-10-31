@@ -83,9 +83,9 @@ class TestJobOrchestration(unittest.TestCase):
     def test_job_reaches_done_with_video_url(self) -> None:
         with (
             mock.patch("storygen.webapp.generate_story", return_value=(STORY, Path("/tmp/x"))),
-            mock.patch("storygen.webapp.generate_images", return_value=[]),
-            mock.patch("storygen.webapp.generate_voices", return_value={1: 2.0}),
-            mock.patch("storygen.webapp.generate_subtitles", return_value=Path("/tmp/x/subtitles.srt")),
+            mock.patch("storygen.pipeline.generate_images", return_value=[]),
+            mock.patch("storygen.pipeline.generate_voices", return_value={1: 2.0}),
+            mock.patch("storygen.pipeline.generate_subtitles", return_value=Path("/tmp/x/subtitles.srt")),
             mock.patch("storygen.webapp.generate_montage", return_value=Path("/tmp/output/x.mp4")),
         ):
             client = TestClient(webapp.app)

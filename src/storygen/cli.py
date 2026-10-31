@@ -12,11 +12,9 @@ import argparse
 import logging
 
 from storygen import config
-from storygen.steps.images import generate_images
+from storygen.pipeline import generate_media
 from storygen.steps.montage import generate_montage
 from storygen.steps.script import generate_story
-from storygen.steps.subtitles import generate_subtitles
-from storygen.steps.voice import generate_voices
 
 logger = logging.getLogger("storygen.cli")
 
@@ -58,15 +56,14 @@ def main() -> None:
     print(f"\n✅ Phase 1 (scénarisation) : {story_dir / 'story.json'}")
     print(f"   Titre : {story.title}  |  Scènes : {len(story.scenes)}")
 
-    image_paths = generate_images(story, story_dir, fmt=args.format, force=args.force)
+    # Images et voix/sous-titres en parallèle (voir storygen/pipeline.py).
+    image_paths, durations, srt_path = generate_media(
+        story, story_dir, fmt=args.format, voice=args.voice, force=args.force
+    )
     print(f"✅ Phase 2a (images)      : {len(image_paths)} image(s) dans {story_dir / 'assets' / 'img'}")
-
-    durations = generate_voices(story, story_dir, voice=args.voice, force=args.force)
     real_total = sum(durations.values())
     print(f"✅ Phase 2b (voix off)    : {len(durations)} piste(s), durée réelle totale {real_total:.1f}s "
           f"(visée : {args.duration}s)")
-
-    srt_path = generate_subtitles(story, story_dir, durations, force=args.force)
     print(f"✅ Phase 3a (sous-titres) : {srt_path}")
 
     final_path = generate_montage(story, story_dir, durations, srt_path, fmt=args.format, force=args.force)

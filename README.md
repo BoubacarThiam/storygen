@@ -34,7 +34,7 @@ Aucun service payant : [OpenRouter](https://openrouter.ai/) (modèles `:free`),
 - **Un 429 (Too Many Requests) de Pollinations ne se dissipe pas avec un backoff court** (1s/2s/4s) — constaté sous usage soutenu. `utils/http.py` attend beaucoup plus longtemps pour un 429 spécifiquement (45s/60s, ou `Retry-After` si fourni).
 - **Un 402/503 Pollinations n'est pas une erreur de paiement définitive** : l'API Classic anonyme limite à *une image à la fois, au moins 45 s d'intervalle par IP*. Envoyer 3 requêtes concurrentes (l'ancien réglage) épuise la limite et produit `402 Payment Required`. `steps/images.py` sérialise désormais les requêtes sans clé et espace les téléchargements de 45 s ; `utils/http.py` traite 402/503 comme des limites de débit (backoff long) au lieu d'abandonner après 15 s. La clé `STORYGEN_POLLINATIONS_API_KEY` supprime cette limite.
 - **Mouvement réel des images** : chaque scène a maintenant deux images-clés (`scene_XX.jpg` + `scene_XX_motion.jpg`) générées depuis `image_prompt` et `motion_prompt` (le LLM décrit le même plan un instant plus tard). Le montage les fond avec une caméra qui zoome et panote : le contenu bouge (geste, eau, fumée) au lieu d'être une photo figée. Si l'image de mouvement échoue, la scène retombe automatiquement sur le Ken Burns statique.
-- **Génération plus rapide avec une clé Pollinations** : les images sont téléchargées en parallèle (`STORYGEN_IMAGE_CONCURRENCY`, 3 par défaut) avec un décalage anti-rafale, et les sous-titres sont incrustés dans le même encodage que les clips de scène — l'ancienne seconde passe d'encodage de toute la vidéo a été supprimée (plus rapide, pas de perte de qualité cumulée). Sans clé, la concurrence retombe volontairement à 1 pour respecter la limite Classic.
+- **Génération plus rapide avec une clé Pollinations** : les images sont téléchargées en parallèle (`STORYGEN_IMAGE_CONCURRENCY`, 3 par défaut) avec un décalage anti-rafale, et les sous-titres sont incrustés dans le même encodage que les clips de scène — l'ancienne seconde passe d'encodage de toute la vidéo a été supprimée (plus rapide, pas de perte de qualité cumulée). Les images sont générées **en même temps** que la voix off et les sous-titres, et les scènes sont encodées en parallèle au montage. Sans clé, la concurrence retombe volontairement à 1 pour respecter la limite Classic.
 
 ## Réglages qualité / vitesse
 
@@ -44,6 +44,7 @@ les constantes de `config.py`) :
 | Variable | Défaut | Effet |
 |---|---|---|
 | `STORYGEN_ANIMATE` | `1` | Anime chaque scène (deux images fondues). `0` = images fixes (Ken Burns seul), pour un hébergement très limité. |
+| `STORYGEN_ANIMATE_ANONYMOUS` | `0` | Anime aussi les scènes **sans clé Pollinations** (double le temps des images, 45 s par image). |
 | `STORYGEN_IMAGE_CONCURRENCY` | `3` | Nombre d'images Pollinations téléchargées en parallèle **avec une clé API**. Sans clé, forcé à `1` (limite Classic). |
 | `STORYGEN_IMAGE_STAGGER` | `0.6` | Pause (s) entre deux soumissions, pour éviter les 429. |
 | `STORYGEN_IMAGE_ANONYMOUS_INTERVAL` | `45` | Sans clé Pollinations : intervalle minimal (s) entre deux images (limite officielle de l'API Classic). |
@@ -54,6 +55,7 @@ les constantes de `config.py`) :
 | `STORYGEN_MONTAGE_UPSCALE` | `2` | Pré-agrandissement avant Ken Burns (2 = zoom plus fluide, plus de RAM/CPU ; 1 sur Render free). |
 | `STORYGEN_OUTPUT_SCALE` | `1.0` | Échelle de la résolution finale (`0.5` sur Render free). |
 | `STORYGEN_FFMPEG_THREADS` | `0` | Cap des threads ffmpeg (`0` = auto). |
+| `STORYGEN_MONTAGE_CONCURRENCY` | moitié des CPU (max 4) | Scènes encodées en parallèle au montage. `1` sur un hébergement à RAM limitée. |
 
 ## Installation
 
@@ -88,8 +90,9 @@ Avec une clé (gratuite via les Quests), StoryGen utilise
 2. Va dans **Keys** (https://enter.pollinations.ai/keys) → crée une clé
 3. Renseigne-la dans `.env` : `STORYGEN_POLLINATIONS_API_KEY=sk_...`
 
-À défaut, `STORYGEN_ANIMATE=0` divise par deux le nombre d'images (une seule
-image par scène) et donc le temps d'attente sans clé.
+Sans clé, l'animation est désactivée par défaut (une seule image par scène,
+Ken Burns) : cela divise par deux le temps d'attente. `STORYGEN_ANIMATE_ANONYMOUS=1`
+la réactive malgré la lenteur.
 
 ## Utilisation
 
